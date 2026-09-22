@@ -1,0 +1,903 @@
+<!DOCTYPE html>
+<html lang="sv">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Larmanalys — mätare</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #0a0f1a;
+    --bg-grid: #0d1422;
+    --panel: #111a2b;
+    --panel-2: #0d1524;
+    --line: #223049;
+    --line-soft: #182236;
+    --text: #dfe6f2;
+    --text-dim: #8a97b3;
+    --text-faint: #5b6884;
+    --accent: #f0a839;
+    --accent-dim: #7a5a25;
+    --rising: #e5484d;
+    --rising-dim: #4a2224;
+    --ok: #37c99b;
+    --mono: 'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+    --sans: 'IBM Plex Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    box-sizing: border-box;
+    padding-top: env(safe-area-inset-top, 0px);
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+  }
+  @media (prefers-color-scheme: light) {
+    :root:not([data-theme="light"]) {
+      --bg: #0a0f1a; --panel:#111a2b; --panel-2:#0d1524; --text:#dfe6f2; --text-dim:#8a97b3;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #0a0f1a; --panel:#111a2b; --panel-2:#0d1524; --text:#dfe6f2; --text-dim:#8a97b3;
+  }
+  html { scroll-padding-top: env(safe-area-inset-top, 0px); }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    background-image:
+      linear-gradient(var(--bg-grid) 1px, transparent 1px),
+      linear-gradient(90deg, var(--bg-grid) 1px, transparent 1px);
+    background-size: 34px 34px;
+    color: var(--text);
+    font-family: var(--sans);
+    -webkit-font-smoothing: antialiased;
+    min-height: 100%;
+  }
+  .wrap { max-width: 1180px; margin: 0 auto; padding: 28px 20px 80px; }
+
+  header.top {
+    display: flex; align-items: baseline; justify-content: space-between; gap: 16px;
+    border-bottom: 1px solid var(--line); padding-bottom: 18px; margin-bottom: 22px;
+    flex-wrap: wrap;
+  }
+  header.top .id { display:flex; align-items:baseline; gap:10px; }
+  header.top .dot { width:9px; height:9px; border-radius:50%; background: var(--accent); box-shadow: 0 0 10px var(--accent); flex: none; }
+  h1 { font-size: 1.32rem; font-weight: 700; margin: 0; letter-spacing: -0.01em; }
+  header.top p { margin: 0; color: var(--text-dim); font-size: 0.86rem; }
+  .clock { font-family: var(--mono); color: var(--text-faint); font-size: 0.78rem; text-align: right; }
+
+  /* --- Upload --- */
+  #uploadZone {
+    border: 1px dashed var(--line);
+    background: var(--panel);
+    border-radius: 4px;
+    padding: 40px 24px;
+    text-align: center;
+    transition: border-color .15s ease, background .15s ease;
+    cursor: pointer;
+  }
+  #uploadZone.drag { border-color: var(--accent); background: #14203a; }
+  #uploadZone h2 { margin: 0 0 6px; font-size: 1.02rem; font-weight: 600; }
+  #uploadZone p { margin: 0; color: var(--text-dim); font-size: 0.86rem; }
+  #uploadZone .filetypes { margin-top: 14px; font-family: var(--mono); font-size: 0.72rem; color: var(--text-faint); letter-spacing: .02em; }
+  #fileInput { display: none; }
+  .upload-actions { margin-top: 18px; display:flex; gap:10px; justify-content:center; flex-wrap: wrap; }
+  button.ghost {
+    font-family: var(--sans); font-size: 0.82rem; font-weight: 600; color: var(--text);
+    background: transparent; border: 1px solid var(--line); padding: 9px 16px; border-radius: 3px;
+    cursor: pointer; transition: border-color .15s, color .15s;
+  }
+  button.ghost:hover { border-color: var(--accent); color: var(--accent); }
+  button.solid {
+    font-family: var(--sans); font-size: 0.82rem; font-weight: 600; color: #1b1305;
+    background: var(--accent); border: none; padding: 9px 16px; border-radius: 3px; cursor: pointer;
+  }
+  button.solid:hover { filter: brightness(1.08); }
+  #encodingNote {
+    display:none; margin-top: 14px; font-size: 0.78rem; color: var(--accent);
+    font-family: var(--mono);
+  }
+
+  /* --- Stats row --- */
+  #dashboard { display: none; }
+  .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin: 24px 0; }
+  .stat {
+    background: var(--panel); border: 1px solid var(--line-soft); border-radius: 4px; padding: 14px 16px;
+  }
+  .stat .num { font-family: var(--mono); font-size: 1.5rem; font-weight: 600; line-height: 1.1; }
+  .stat .lbl { margin-top: 4px; font-size: 0.74rem; color: var(--text-dim); }
+  .stat.warn .num { color: var(--accent); }
+  .stat.rise .num { color: var(--rising); }
+
+  /* --- Controls --- */
+  .controls {
+    display: flex; flex-wrap: wrap; gap: 10px 16px; align-items: end;
+    background: var(--panel-2); border: 1px solid var(--line-soft); border-radius: 4px;
+    padding: 14px 16px; margin-bottom: 22px;
+  }
+  .field { display: flex; flex-direction: column; gap: 5px; }
+  .field label { font-size: 0.7rem; color: var(--text-faint); text-transform: none; }
+  .field input, .field select {
+    font-family: var(--mono); font-size: 0.8rem; color: var(--text);
+    background: var(--bg); border: 1px solid var(--line); border-radius: 3px; padding: 6px 8px;
+  }
+  .field input[type="search"] { width: 200px; font-family: var(--sans); }
+  .controls .spacer { flex: 1; }
+  .controls .note { font-size: 0.72rem; color: var(--text-faint); max-width: 220px; }
+
+  /* --- Panels --- */
+  .panel {
+    background: var(--panel); border: 1px solid var(--line-soft); border-radius: 4px;
+    margin-bottom: 24px; overflow: hidden;
+  }
+  .panel > .head {
+    display:flex; align-items:baseline; justify-content: space-between; gap: 10px;
+    padding: 14px 18px; border-bottom: 1px solid var(--line-soft);
+  }
+  .panel > .head h2 { font-size: 0.98rem; margin: 0; font-weight: 600; }
+  .panel > .head .sub { font-size: 0.76rem; color: var(--text-dim); }
+  .panel.rise > .head { border-bottom-color: var(--rising-dim); }
+
+  table { width: 100%; border-collapse: collapse; font-size: 0.84rem; }
+  thead th {
+    text-align: left; font-weight: 600; font-size: 0.7rem; color: var(--text-faint);
+    padding: 8px 18px; border-bottom: 1px solid var(--line-soft); white-space: nowrap;
+  }
+  tbody td { padding: 10px 18px; border-bottom: 1px solid var(--line-soft); vertical-align: middle; }
+  tbody tr:last-child td { border-bottom: none; }
+  tbody tr { cursor: pointer; transition: background .1s; }
+  tbody tr:hover { background: #16213a; }
+  td.id, th.id { font-family: var(--mono); }
+  td.num, th.num { font-family: var(--mono); text-align: right; }
+  .tag {
+    display:inline-block; font-size: 0.68rem; font-family: var(--mono); padding: 2px 6px;
+    border-radius: 2px; border: 1px solid var(--line); color: var(--text-dim);
+  }
+  .tag.new { border-color: var(--rising); color: var(--rising); }
+  .rank { color: var(--text-faint); font-family: var(--mono); }
+  .bar-cell { display:flex; align-items:center; gap: 8px; }
+  .bar-track { flex:1; height: 6px; background: var(--line-soft); border-radius: 3px; overflow:hidden; min-width: 60px; }
+  .bar-fill { height: 100%; background: var(--accent); }
+  .bar-fill.rise { background: var(--rising); }
+  .empty { padding: 30px 18px; text-align:center; color: var(--text-faint); font-size: 0.85rem; }
+
+  /* Topic breakdown */
+  .topics { padding: 14px 18px; display: flex; flex-direction: column; gap: 8px; }
+  .topic-row { display:flex; align-items:center; gap: 10px; font-size: 0.8rem; }
+  .topic-row .name { width: 300px; flex: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-dim); font-family: var(--mono); font-size: 0.74rem; }
+  .topic-row .bar-track { height: 8px; }
+  .topic-row .n { width: 42px; text-align: right; font-family: var(--mono); font-size: 0.76rem; color: var(--text-dim); }
+
+  /* Modal */
+  #modalBack {
+    display:none; position: fixed; inset: 0; background: rgba(5,8,14,0.72);
+    align-items: flex-start; justify-content: center; padding: 5vh 16px; z-index: 50; overflow-y:auto;
+  }
+  #modal {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 6px;
+    width: 100%; max-width: 720px; max-height: 88vh; overflow-y: auto;
+  }
+  #modal .mhead { padding: 18px 22px; border-bottom: 1px solid var(--line-soft); display:flex; justify-content: space-between; align-items:flex-start; gap: 12px; position: sticky; top:0; background: var(--panel); }
+  #modal .mhead h3 { margin: 0 0 4px; font-family: var(--mono); font-size: 1.02rem; }
+  #modal .mhead .meta { color: var(--text-dim); font-size: 0.78rem; }
+  #modal .mclose { background: none; border: none; color: var(--text-dim); font-size: 1.3rem; cursor: pointer; line-height: 1; padding: 2px 6px; }
+  #modal .mbody { padding: 16px 22px 22px; }
+  .event-row { padding: 9px 0; border-bottom: 1px solid var(--line-soft); font-size: 0.8rem; }
+  .event-row:last-child { border-bottom: none; }
+  .event-row .t { font-family: var(--mono); color: var(--text-faint); font-size: 0.72rem; }
+  .event-row .top { display:flex; justify-content: space-between; gap: 10px; }
+  .event-row .msg { margin-top: 3px; color: var(--text-dim); }
+  .sev { font-family: var(--mono); font-size: 0.68rem; padding: 1px 6px; border-radius: 2px; border:1px solid var(--line); color: var(--text-dim); }
+
+  footer.hint { text-align:center; color: var(--text-faint); font-size: 0.74rem; margin-top: 10px; }
+
+  ::-webkit-scrollbar { width: 10px; height: 10px; }
+  ::-webkit-scrollbar-thumb { background: var(--line); border-radius: 5px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+
+  @media (max-width: 720px) {
+    .stats { grid-template-columns: repeat(2,1fr); }
+    thead { display:none; }
+    table, tbody, tr, td { display:block; width:100%; }
+    tbody tr { border-bottom: 1px solid var(--line-soft); padding: 10px 0; }
+    tbody td { border-bottom:none; padding: 3px 18px; }
+    .topic-row .name { width: 140px; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header class="top">
+    <div>
+      <div class="id"><span class="dot"></span><h1>Larmanalys — mätare</h1></div>
+      <p>Läs in en larmexport och se vilka mätare/enheter som larmar mest — och vilka som är på väg upp.</p>
+    </div>
+    <div class="clock" id="clock"></div>
+  </header>
+
+  <div id="uploadZone">
+    <h2>Släpp filen här, eller klicka för att välja</h2>
+    <p>CSV eller tabbseparerad export med kolumnerna Topic, Timestamp, Severity, Details, Metering point, Device, Organisation …</p>
+    <div class="filetypes">.csv · .tsv · .txt</div>
+    <div class="upload-actions">
+      <button class="solid" id="btnChoose" type="button">Välj fil</button>
+      <button class="ghost" id="btnSample" type="button">Prova med exempeldata</button>
+    </div>
+    <div id="encodingNote"></div>
+    <input type="file" id="fileInput" accept=".csv,.tsv,.txt">
+  </div>
+
+  <div id="dashboard">
+
+    <div class="stats">
+      <div class="stat">
+        <div class="num" id="statTotal">0</div>
+        <div class="lbl">Larm i vald period</div>
+      </div>
+      <div class="stat">
+        <div class="num" id="statMeters">0</div>
+        <div class="lbl">Unika mätare / enheter</div>
+      </div>
+      <div class="stat warn">
+        <div class="num" id="statTop">–</div>
+        <div class="lbl">Mest larmande</div>
+      </div>
+      <div class="stat rise">
+        <div class="num" id="statRising">0</div>
+        <div class="lbl">Med stigande trend</div>
+      </div>
+    </div>
+
+    <div class="controls">
+      <div class="field">
+        <label>Från</label>
+        <input type="datetime-local" id="fStart">
+      </div>
+      <div class="field">
+        <label>Till</label>
+        <input type="datetime-local" id="fEnd">
+      </div>
+      <div class="field">
+        <label>Trendupplösning</label>
+        <select id="fGranularity">
+          <option value="auto">Automatisk</option>
+          <option value="hour">Timme</option>
+          <option value="day">Dag</option>
+          <option value="week">Vecka</option>
+        </select>
+      </div>
+      <div class="field">
+        <label>Min. antal larm för trend</label>
+        <select id="fMinCount">
+          <option value="3">3</option>
+          <option value="4" selected>4</option>
+          <option value="6">6</option>
+          <option value="10">10</option>
+        </select>
+      </div>
+      <div class="field">
+        <label>Sök mätare/enhet-id</label>
+        <input type="search" id="fSearch" placeholder="t.ex. 735999...">
+      </div>
+      <div class="spacer"></div>
+      <div class="note" id="rangeNote"></div>
+      <button class="ghost" id="btnReset" type="button">Ny fil</button>
+    </div>
+
+    <div class="panel">
+      <div class="head">
+        <h2>Mest larmande mätare</h2>
+        <span class="sub" id="topSub"></span>
+      </div>
+      <table>
+        <thead>
+          <tr>
+            <th style="width:34px">#</th>
+            <th class="id">Id</th>
+            <th>Typ</th>
+            <th>Vanligaste larm</th>
+            <th>Organisation</th>
+            <th class="num">Antal</th>
+            <th>Andel</th>
+            <th>Senaste larm</th>
+          </tr>
+        </thead>
+        <tbody id="topBody"></tbody>
+      </table>
+      <div class="empty" id="topEmpty" style="display:none">Inga larm i vald period.</div>
+    </div>
+
+    <div class="panel rise">
+      <div class="head">
+        <h2>Stigande larmtrend</h2>
+        <span class="sub">Mätare där larmfrekvensen ökar tydligt över perioden — kan missas i topplistan om totalantalet ännu är lågt</span>
+      </div>
+      <table>
+        <thead>
+          <tr>
+            <th class="id">Id</th>
+            <th>Typ</th>
+            <th>Trend</th>
+            <th class="num">Första halvan</th>
+            <th class="num">Andra halvan</th>
+            <th class="num">Totalt</th>
+            <th>I topplistan?</th>
+          </tr>
+        </thead>
+        <tbody id="riseBody"></tbody>
+      </table>
+      <div class="empty" id="riseEmpty" style="display:none">Inga mätare med tydligt stigande trend hittades i vald period.</div>
+    </div>
+
+    <div class="panel">
+      <div class="head">
+        <h2>Larmtyper i perioden</h2>
+        <span class="sub" id="topicSub"></span>
+      </div>
+      <div class="topics" id="topicList"></div>
+    </div>
+
+    <footer class="hint">Klicka på en rad för att se enskilda larmhändelser.</footer>
+  </div>
+
+</div>
+
+<div id="modalBack">
+  <div id="modal">
+    <div class="mhead">
+      <div>
+        <h3 id="mTitle"></h3>
+        <div class="meta" id="mMeta"></div>
+      </div>
+      <button class="mclose" id="mClose" type="button">&times;</button>
+    </div>
+    <div class="mbody" id="mBody"></div>
+  </div>
+</div>
+
+<script>
+(function () {
+  "use strict";
+
+  var SAMPLE_TSV = "Topic\tTimestamp\tReceived\tSeverity\tDetails\tMetering point\tDevice\tOrganisation\tCorrelation ID\tInitiated by\n" +
+"Security.DeviceCommunication.UnknownCommunicationSource\t22.09.2025 15:00:39 UTC +02:00\t22.09.2025 15:00:39 UTC +02:00\tMajor\t{\"customerGuid\":\"6e857a81-4d24-488a-a1e3-f464e3d915ad\",\"topic\":\"Security.DeviceCommunication.UnknownCommunicationSource\",\"timestamp\":\"2025-09-22T13:00:39.1052939Z\",\"correlationId\":\"a13609d9-7a70-4916-9b42-5b3b7c547f11\",\"severity\":\"Major\",\"details\":{\"Message\":\"Unable to parse encrypted message. Could not find a device for a module with the source address '7941177'.\",\"CommunicationId\":\"7941177\",\"ModuleId\":\"7359992879411778\",\"GatewayDeviceId\":\"7359992886610973\"}}\t-\t-\tSundsvall\ta13609d9-7a70-4916-9b42-5b3b7c547f11\tOkänd\n" +
+"Security.DeviceCommunication.UnknownCommunicationSource\t22.09.2025 15:05:12 UTC +02:00\t22.09.2025 15:05:12 UTC +02:00\tMajor\t{\"details\":{\"Message\":\"Unable to parse encrypted message.\",\"CommunicationId\":\"5024799\",\"ModuleId\":\"7359993050247995\",\"GatewayDeviceId\":\"7359992932488921\"}}\t-\t-\tSundsvall\tfa53ba0c-7941-4644-97db-748291d2e9b2\tOkänd\n" +
+"Security.DeviceCommunication.UnknownCommunicationSource\t22.09.2025 15:14:54 UTC +02:00\t22.09.2025 15:14:54 UTC +02:00\tMajor\t{\"details\":{\"Message\":\"Unable to parse encrypted message.\",\"CommunicationId\":\"7983643\",\"ModuleId\":\"7359992879836434\",\"GatewayDeviceId\":\"7359992878221286\"}}\t-\t-\tSundsvall\t013c9620-6a99-42e0-adc4-5c6c6bc0a409\tOkänd\n" +
+"Security.DeviceCommunication.UnknownCommunicationSource\t22.09.2025 15:16:22 UTC +02:00\t22.09.2025 15:16:22 UTC +02:00\tMajor\t{\"details\":{\"Message\":\"Unable to parse encrypted message.\",\"CommunicationId\":\"7983955\",\"ModuleId\":\"7359992879839558\",\"GatewayDeviceId\":\"7359992886610973\"}}\t-\t-\tSundsvall\tf659dc59-7d63-4098-9e1a-aa0e0c3979d3\tOkänd\n" +
+"Security.DeviceCommunication.UnknownCommunicationSource\t22.09.2025 15:20:15 UTC +02:00\t22.09.2025 15:20:15 UTC +02:00\tMajor\t{\"details\":{\"Message\":\"Unable to parse encrypted message.\",\"CommunicationId\":\"8873175\",\"ModuleId\":\"7359992888731751\",\"GatewayDeviceId\":\"7359992878029158\"}}\t-\t-\tSundsvall\t77ea5f69-bcf0-4ee9-8fd9-414a3cab0e63\tOkänd\n" +
+"Device.DataCollection.Interruption\t22.09.2025 15:30:27 UTC +02:00\t22.09.2025 15:30:27 UTC +02:00\tMajor\t{\"details\":{\"Message\":\"Data collection interrupted.\",\"DeviceId\":\"7359992932750776\",\"LatestMeasurementTime\":\"2025-09-22T10:30:00Z\"}}\t-\t7359992932750776\tSundsvall\t91b6bff0-09a9-4e97-b219-aae2b270d49a\tOkänd\n" +
+"Device.PowerOutage\t22.09.2025 15:41:45 UTC +02:00\t22.09.2025 15:41:45 UTC +02:00\tMajor\t{\"details\":{\"Message\":\"Device lost power.\",\"IsDevicePowered\":false,\"DeviceId\":\"7359992929237792\"}}\t-\t7359992929237792\tSundsvall\t4c9d3495-3ee5-4182-9d4e-adfb3e4fded7\tOkänd\n" +
+"Device.DataCollection.Interruption\t22.09.2025 15:45:27 UTC +02:00\t22.09.2025 15:45:27 UTC +02:00\tMajor\t{\"details\":{\"Message\":\"Data collection interrupted.\",\"DeviceId\":\"7359992925185196\"}}\t-\t7359992925185196\tSundsvall\t3d77886f-d379-407b-a467-0218eb4bb27a\tOkänd\n" +
+"Device.DataCollection.Interruption\t22.09.2025 15:45:27 UTC +02:00\t22.09.2025 15:45:27 UTC +02:00\tMajor\t{\"details\":{\"Message\":\"Data collection interrupted.\",\"DeviceId\":\"7359992926965469\"}}\t-\t7359992926965469\tSundsvall\t5309365f-f55b-42f5-b79a-fb407556a2f9\tOkänd\n" +
+"Device.DataCollection.Interruption\t22.09.2025 15:45:27 UTC +02:00\t22.09.2025 15:45:27 UTC +02:00\tMajor\t{\"details\":{\"Message\":\"Data collection interrupted.\",\"DeviceId\":\"7359992931238596\"}}\t-\t7359992931238596\tSundsvall\taf2598f6-f88f-4c49-9b8f-8e624c1c55e7\tOkänd\n" +
+"Device.PowerOutage\t22.09.2025 15:52:21 UTC +02:00\t22.09.2025 15:52:21 UTC +02:00\tMajor\t{\"details\":{\"Message\":\"Device lost power.\",\"IsDevicePowered\":false,\"DeviceId\":\"7359992932794084\"}}\t-\t7359992932794084\tSundsvall\t829a9ad7-9b53-49d4-aed8-5a56c7d25353\tOkänd\n" +
+"Device.PowerOutage\t22.09.2025 15:53:44 UTC +02:00\t22.09.2025 15:53:44 UTC +02:00\tMajor\t{\"details\":{\"Message\":\"Device power restored.\",\"IsDevicePowered\":true,\"DeviceId\":\"7359992932794084\"}}\t-\t7359992932794084\tSundsvall\tb9ddc06a-5fc5-43ab-8008-482ca625257d\tOkänd\n" +
+"Device.PowerOutage\t22.09.2025 15:57:00 UTC +02:00\t22.09.2025 15:57:00 UTC +02:00\tMajor\t{\"details\":{\"Message\":\"Device power restored.\",\"IsDevicePowered\":true,\"DeviceId\":\"7359992929237792\"}}\t-\t7359992929237792\tSundsvall\tfda80495-cf7e-4670-8956-747d4634ef74\tOkänd\n" +
+"Device.DataCollection.Interruption\t22.09.2025 16:00:27 UTC +02:00\t22.09.2025 16:00:27 UTC +02:00\tMajor\t{\"details\":{\"Message\":\"Data collection interrupted.\",\"DeviceId\":\"7359992926464474\"}}\t-\t7359992926464474\tSundsvall\t8d692d22-d8fd-4a69-8bff-01d08c895a71\tOkänd\n" +
+"Device.DataCollection.Interruption\t22.09.2025 16:00:27 UTC +02:00\t22.09.2025 16:00:27 UTC +02:00\tMajor\t{\"details\":{\"Message\":\"Data collection interrupted.\",\"DeviceId\":\"7359992931213685\"}}\t-\t7359992931213685\tSundsvall\t6587fb3c-7df1-466c-b352-e3da99d3a440\tOkänd\n" +
+"Device.DataCollection.Interruption\t22.09.2025 16:00:27 UTC +02:00\t22.09.2025 16:00:27 UTC +02:00\tMajor\t{\"details\":{\"Message\":\"Data collection interrupted.\",\"DeviceId\":\"7359992929731122\"}}\t-\t7359992929731122\tSundsvall\tf68e004a-a5fe-40f5-90be-e616f7f1ee5e\tOkänd\n";
+
+  // ---------- state ----------
+  var state = {
+    rows: [],          // all parsed rows {topic,timestamp(Date),severity,message,meterId,meterType,org,correlationId}
+    minDate: null,
+    maxDate: null
+  };
+
+  // ---------- dom ----------
+  var $ = function (id) { return document.getElementById(id); };
+  var uploadZone = $("uploadZone"), fileInput = $("fileInput");
+  var dashboard = $("dashboard");
+
+  // ---------- clock ----------
+  function tickClock() {
+    var d = new Date();
+    $("clock").textContent = d.toLocaleString("sv-SE", { hour12: false });
+  }
+  tickClock();
+  setInterval(tickClock, 1000);
+
+  // ---------- file handling ----------
+  $("btnChoose").addEventListener("click", function () { fileInput.click(); });
+  uploadZone.addEventListener("click", function (e) {
+    if (e.target.closest("button")) return;
+    fileInput.click();
+  });
+  fileInput.addEventListener("change", function () {
+    if (fileInput.files && fileInput.files[0]) readFile(fileInput.files[0]);
+  });
+  ["dragenter", "dragover"].forEach(function (ev) {
+    uploadZone.addEventListener(ev, function (e) { e.preventDefault(); uploadZone.classList.add("drag"); });
+  });
+  ["dragleave", "drop"].forEach(function (ev) {
+    uploadZone.addEventListener(ev, function (e) { e.preventDefault(); uploadZone.classList.remove("drag"); });
+  });
+  uploadZone.addEventListener("drop", function (e) {
+    var f = e.dataTransfer.files && e.dataTransfer.files[0];
+    if (f) readFile(f);
+  });
+  $("btnSample").addEventListener("click", function () {
+    loadText(SAMPLE_TSV, false);
+  });
+  $("btnReset").addEventListener("click", function () {
+    dashboard.style.display = "none";
+    uploadZone.style.display = "";
+    $("encodingNote").style.display = "none";
+    fileInput.value = "";
+  });
+
+  function readFile(file) {
+    var reader = new FileReader();
+    reader.onload = function () {
+      var buf = new Uint8Array(reader.result);
+      var text = new TextDecoder("utf-8").decode(buf);
+      var fixed = maybeFixMojibake(text);
+      loadText(fixed.text, fixed.fixed);
+    };
+    reader.readAsArrayBuffer(file);
+  }
+
+  function maybeFixMojibake(text) {
+    // Heuristic: exports sometimes double-encode UTF-8 as if it were Latin-1,
+    // producing sequences like "Ã¤" instead of "ä". Detect and repair.
+    var suspects = (text.match(/Ã./g) || []).length;
+    if (suspects < 2) return { text: text, fixed: false };
+    try {
+      var bytes = [];
+      var ok = true;
+      for (var i = 0; i < text.length; i++) {
+        var c = text.charCodeAt(i);
+        if (c > 255) { ok = false; break; }
+        bytes.push(c);
+      }
+      if (!ok) return { text: text, fixed: false };
+      var repaired = new TextDecoder("utf-8").decode(new Uint8Array(bytes));
+      var stillBad = (repaired.match(/Ã./g) || []).length;
+      if (stillBad < suspects) return { text: repaired, fixed: true };
+      return { text: text, fixed: false };
+    } catch (e) {
+      return { text: text, fixed: false };
+    }
+  }
+
+  function loadText(text, wasFixed) {
+    var note = $("encodingNote");
+    if (wasFixed) {
+      note.style.display = "block";
+      note.textContent = "Teckenkodningen korrigerades automatiskt (t.ex. Ã¤ → ä).";
+    } else {
+      note.style.display = "none";
+    }
+    try {
+      var rows = parseDelimited(text);
+      if (!rows.length) throw new Error("Filen verkar tom.");
+      var header = rows[0].map(function (h) { return h.trim().toLowerCase(); });
+      var idx = {
+        topic: header.indexOf("topic"),
+        timestamp: header.indexOf("timestamp"),
+        severity: header.indexOf("severity"),
+        details: header.indexOf("details"),
+        meteringPoint: header.indexOf("metering point"),
+        device: header.indexOf("device"),
+        organisation: header.indexOf("organisation"),
+        correlationId: header.indexOf("correlation id")
+      };
+      if (idx.topic === -1 || idx.timestamp === -1) {
+        throw new Error("Hittar inte kolumnerna 'Topic' och 'Timestamp' i filen.");
+      }
+      var parsed = [];
+      for (var r = 1; r < rows.length; r++) {
+        var cols = rows[r];
+        if (cols.length < 2 || (cols.length === 1 && cols[0] === "")) continue;
+        var ts = parseTimestamp(cols[idx.timestamp] || "");
+        if (!ts) continue;
+        var detailsRaw = idx.details > -1 ? cols[idx.details] : "";
+        var parsedDetails = safeParseJSON(detailsRaw);
+        var mp = idx.meteringPoint > -1 ? (cols[idx.meteringPoint] || "").trim() : "";
+        var dev = idx.device > -1 ? (cols[idx.device] || "").trim() : "";
+        var ident = resolveMeterIdentity(mp, dev, parsedDetails);
+        parsed.push({
+          topic: (cols[idx.topic] || "").trim(),
+          timestamp: ts,
+          severity: idx.severity > -1 ? (cols[idx.severity] || "").trim() : "",
+          message: extractMessage(parsedDetails),
+          meterId: ident.id,
+          meterType: ident.type,
+          org: idx.organisation > -1 ? (cols[idx.organisation] || "").trim() : "",
+          correlationId: idx.correlationId > -1 ? (cols[idx.correlationId] || "").trim() : ""
+        });
+      }
+      if (!parsed.length) throw new Error("Inga giltiga rader kunde tolkas ur filen.");
+      parsed.sort(function (a, b) { return a.timestamp - b.timestamp; });
+      state.rows = parsed;
+      state.minDate = parsed[0].timestamp;
+      state.maxDate = parsed[parsed.length - 1].timestamp;
+
+      uploadZone.style.display = "none";
+      dashboard.style.display = "block";
+      $("fStart").value = toLocalInputValue(state.minDate);
+      $("fEnd").value = toLocalInputValue(state.maxDate);
+      renderAll();
+    } catch (err) {
+      note.style.display = "block";
+      note.style.color = "var(--rising)";
+      note.textContent = "Kunde inte tolka filen: " + err.message;
+    }
+  }
+
+  // ---------- delimited parsing (comma or tab, quote-aware) ----------
+  function parseDelimited(text) {
+    text = text.replace(/^\uFEFF/, "");
+    var firstLineEnd = text.indexOf("\n");
+    var firstLine = firstLineEnd === -1 ? text : text.slice(0, firstLineEnd);
+    var tabCount = (firstLine.match(/\t/g) || []).length;
+    var commaCount = (firstLine.match(/,/g) || []).length;
+    var delim = tabCount >= commaCount ? "\t" : ",";
+
+    var rows = [];
+    var row = [];
+    var field = "";
+    var inQuotes = false;
+    for (var i = 0; i < text.length; i++) {
+      var c = text[i];
+      if (inQuotes) {
+        if (c === '"') {
+          if (text[i + 1] === '"') { field += '"'; i++; }
+          else inQuotes = false;
+        } else field += c;
+      } else {
+        if (c === '"') inQuotes = true;
+        else if (c === delim) { row.push(field); field = ""; }
+        else if (c === "\r") { /* skip */ }
+        else if (c === "\n") { row.push(field); rows.push(row); row = []; field = ""; }
+        else field += c;
+      }
+    }
+    if (field.length || row.length) { row.push(field); rows.push(row); }
+    return rows.filter(function (r) { return !(r.length === 1 && r[0].trim() === ""); });
+  }
+
+  function parseTimestamp(s) {
+    s = (s || "").trim();
+    var m = s.match(/^(\d{2})\.(\d{2})\.(\d{4})\s+(\d{2}):(\d{2}):(\d{2})\s*UTC\s*([+-]\d{2}):?(\d{2})$/);
+    if (m) {
+      var iso = m[3] + "-" + m[2] + "-" + m[1] + "T" + m[4] + ":" + m[5] + ":" + m[6] + m[7] + ":" + m[9];
+      var d = new Date(iso);
+      if (!isNaN(d)) return d;
+    }
+    var d2 = new Date(s);
+    return isNaN(d2) ? null : d2;
+  }
+
+  function safeParseJSON(s) {
+    if (!s) return null;
+    try { return JSON.parse(s); } catch (e) { return null; }
+  }
+
+  function extractMessage(json) {
+    if (!json) return "";
+    if (json.details && json.details.Message) return json.details.Message;
+    if (json.Message) return json.Message;
+    return "";
+  }
+
+  function resolveMeterIdentity(mp, dev, json) {
+    if (mp && mp !== "-") return { id: mp, type: "Mätpunkt" };
+    if (dev && dev !== "-") return { id: dev, type: "Enhet" };
+    var d = json && json.details ? json.details : (json || {});
+    if (d.DeviceId) return { id: d.DeviceId, type: "Enhet (JSON)" };
+    if (json && json.meteringPointId) return { id: json.meteringPointId, type: "Mätpunkt (JSON)" };
+    if (d.GatewayDeviceId) return { id: d.GatewayDeviceId, type: "Gateway" };
+    if (d.CommunicationId) return { id: d.CommunicationId, type: "Kommunikationskälla" };
+    if (d.ModuleId) return { id: d.ModuleId, type: "Modul" };
+    return { id: "Okänd", type: "Okänd" };
+  }
+
+  function toLocalInputValue(d) {
+    var pad = function (n) { return String(n).padStart(2, "0"); };
+    return d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate()) + "T" + pad(d.getHours()) + ":" + pad(d.getMinutes());
+  }
+
+  // ---------- filtering + aggregation ----------
+  function getFiltered() {
+    var start = $("fStart").value ? new Date($("fStart").value) : state.minDate;
+    var end = $("fEnd").value ? new Date($("fEnd").value) : state.maxDate;
+    var search = $("fSearch").value.trim().toLowerCase();
+    return state.rows.filter(function (r) {
+      if (r.timestamp < start || r.timestamp > end) return false;
+      if (search && r.meterId.toLowerCase().indexOf(search) === -1) return false;
+      return true;
+    });
+  }
+
+  function groupByMeter(rows) {
+    var map = {};
+    rows.forEach(function (r) {
+      if (!map[r.meterId]) {
+        map[r.meterId] = { id: r.meterId, type: r.meterType, org: r.org, count: 0, topics: {}, events: [], last: r.timestamp, first: r.timestamp };
+      }
+      var g = map[r.meterId];
+      g.count++;
+      g.topics[r.topic] = (g.topics[r.topic] || 0) + 1;
+      g.events.push(r);
+      if (r.timestamp > g.last) g.last = r.timestamp;
+      if (r.timestamp < g.first) g.first = r.timestamp;
+    });
+    return Object.keys(map).map(function (k) { return map[k]; });
+  }
+
+  function topTopic(g) {
+    var best = null, bestN = -1;
+    Object.keys(g.topics).forEach(function (t) {
+      if (g.topics[t] > bestN) { bestN = g.topics[t]; best = t; }
+    });
+    return best;
+  }
+
+  // ---------- bucketing / trend ----------
+  function chooseGranularity(spanMs) {
+    var g = $("fGranularity").value;
+    if (g !== "auto") return g;
+    var hour = 3600000, day = 86400000;
+    if (spanMs <= 2 * day) return "hour";
+    if (spanMs <= 21 * day) return "day";
+    return "week";
+  }
+
+  function bucketKey(date, granularity) {
+    if (granularity === "hour") {
+      return date.getFullYear() + "-" + date.getMonth() + "-" + date.getDate() + "-" + date.getHours();
+    }
+    if (granularity === "week") {
+      var tmp = new Date(date);
+      var day = (tmp.getDay() + 6) % 7; // Monday=0
+      tmp.setDate(tmp.getDate() - day);
+      return tmp.getFullYear() + "-" + tmp.getMonth() + "-" + tmp.getDate();
+    }
+    return date.getFullYear() + "-" + date.getMonth() + "-" + date.getDate();
+  }
+
+  function buildBucketList(start, end, granularity) {
+    var buckets = [];
+    var step = granularity === "hour" ? 3600000 : granularity === "week" ? 7 * 86400000 : 86400000;
+    var cursor = new Date(start);
+    if (granularity === "day") cursor.setHours(0, 0, 0, 0);
+    if (granularity === "week") {
+      var day = (cursor.getDay() + 6) % 7;
+      cursor.setDate(cursor.getDate() - day);
+      cursor.setHours(0, 0, 0, 0);
+    }
+    if (granularity === "hour") cursor.setMinutes(0, 0, 0);
+    while (cursor <= end) {
+      buckets.push(bucketKey(cursor, granularity));
+      cursor = new Date(cursor.getTime() + step);
+    }
+    if (!buckets.length) buckets.push(bucketKey(start, granularity));
+    return buckets;
+  }
+
+  function linreg(xs, ys) {
+    var n = xs.length;
+    var sumX = 0, sumY = 0, sumXY = 0, sumXX = 0, sumYY = 0;
+    for (var i = 0; i < n; i++) {
+      sumX += xs[i]; sumY += ys[i]; sumXY += xs[i] * ys[i]; sumXX += xs[i] * xs[i]; sumYY += ys[i] * ys[i];
+    }
+    var denom = (n * sumXX - sumX * sumX);
+    var slope = denom !== 0 ? (n * sumXY - sumX * sumY) / denom : 0;
+    var covXY = sumXY / n - (sumX / n) * (sumY / n);
+    var varX = sumXX / n - (sumX / n) * (sumX / n);
+    var varY = sumYY / n - (sumY / n) * (sumY / n);
+    var r = (varX > 0 && varY > 0) ? covXY / Math.sqrt(varX * varY) : 0;
+    return { slope: slope, r: r };
+  }
+
+  function computeTrends(rows, start, end) {
+    var span = end - start || 1;
+    var granularity = chooseGranularity(span);
+    var bucketList = buildBucketList(start, end, granularity);
+    var bucketIndex = {};
+    bucketList.forEach(function (b, i) { bucketIndex[b] = i; });
+
+    var byMeter = {};
+    rows.forEach(function (r) {
+      if (!byMeter[r.meterId]) byMeter[r.meterId] = new Array(bucketList.length).fill(0);
+      var key = bucketKey(r.timestamp, granularity);
+      var i = bucketIndex[key];
+      if (i !== undefined) byMeter[r.meterId][i]++;
+    });
+
+    var minCount = parseInt($("fMinCount").value, 10);
+    var xs = bucketList.map(function (_, i) { return i; });
+    var results = [];
+    Object.keys(byMeter).forEach(function (id) {
+      var counts = byMeter[id];
+      var total = counts.reduce(function (a, b) { return a + b; }, 0);
+      if (total < minCount || counts.length < 3) return;
+      var third = Math.max(1, Math.floor(counts.length / 3));
+      var firstSum = counts.slice(0, third).reduce(function (a, b) { return a + b; }, 0);
+      var lastSum = counts.slice(counts.length - third).reduce(function (a, b) { return a + b; }, 0);
+      var reg = linreg(xs, counts);
+      var isRising = reg.slope > 0.08 && reg.r > 0.35 && lastSum > firstSum && lastSum >= 2;
+      if (isRising) {
+        var halfIdx = Math.floor(counts.length / 2);
+        var firstHalf = counts.slice(0, halfIdx).reduce(function (a, b) { return a + b; }, 0);
+        var secondHalf = counts.slice(halfIdx).reduce(function (a, b) { return a + b; }, 0);
+        results.push({ id: id, counts: counts, total: total, slope: reg.slope, r: reg.r, firstHalf: firstHalf, secondHalf: secondHalf });
+      }
+    });
+    results.sort(function (a, b) { return b.slope - a.slope || b.total - a.total; });
+    return { results: results, granularity: granularity };
+  }
+
+  var GRAN_LABEL = { hour: "timme", day: "dag", week: "vecka" };
+
+  // ---------- rendering ----------
+  function renderAll() {
+    var filtered = getFiltered();
+    var groups = groupByMeter(filtered);
+    groups.sort(function (a, b) { return b.count - a.count; });
+
+    var start = $("fStart").value ? new Date($("fStart").value) : state.minDate;
+    var end = $("fEnd").value ? new Date($("fEnd").value) : state.maxDate;
+    var trendData = computeTrends(filtered, start, end);
+    var topIds = {};
+    groups.slice(0, 10).forEach(function (g) { topIds[g.id] = true; });
+
+    // stats
+    $("statTotal").textContent = filtered.length.toLocaleString("sv-SE");
+    $("statMeters").textContent = groups.length.toLocaleString("sv-SE");
+    $("statTop").textContent = groups.length ? shortId(groups[0].id) : "–";
+    $("statRising").textContent = trendData.results.length;
+    $("rangeNote").textContent = state.minDate && state.maxDate
+      ? "Data i filen sträcker sig " + state.minDate.toLocaleString("sv-SE") + " – " + state.maxDate.toLocaleString("sv-SE")
+      : "";
+
+    renderTop(groups, filtered.length, topIds);
+    renderRising(trendData, groups, topIds);
+    renderTopics(filtered);
+
+    window.__meterGroups = {};
+    groups.forEach(function (g) { window.__meterGroups[g.id] = g; });
+  }
+
+  function shortId(id) {
+    return id.length > 14 ? id.slice(0, 6) + "…" + id.slice(-4) : id;
+  }
+
+  function renderTop(groups, totalCount, topIds) {
+    var body = $("topBody");
+    body.innerHTML = "";
+    $("topSub").textContent = groups.length ? ("Topp " + Math.min(15, groups.length) + " av " + groups.length) : "";
+    var list = groups.slice(0, 15);
+    $("topEmpty").style.display = list.length ? "none" : "block";
+    var maxCount = list.length ? list[0].count : 1;
+
+    list.forEach(function (g, i) {
+      var tr = document.createElement("tr");
+      tr.addEventListener("click", function () { openModal(g); });
+      var pct = totalCount ? Math.round((g.count / totalCount) * 100) : 0;
+      var barPct = Math.round((g.count / maxCount) * 100);
+      tr.innerHTML =
+        '<td class="rank">' + (i + 1) + '</td>' +
+        '<td class="id">' + esc(g.id) + '</td>' +
+        '<td>' + esc(g.type) + '</td>' +
+        '<td>' + esc(topTopic(g)) + '</td>' +
+        '<td>' + esc(g.org || "–") + '</td>' +
+        '<td class="num">' + g.count + '</td>' +
+        '<td><div class="bar-cell"><div class="bar-track"><div class="bar-fill" style="width:' + barPct + '%"></div></div><span style="font-family:var(--mono);font-size:.72rem;color:var(--text-faint)">' + pct + '%</span></div></td>' +
+        '<td style="font-family:var(--mono);font-size:.76rem;color:var(--text-dim)">' + g.last.toLocaleString("sv-SE") + '</td>';
+      body.appendChild(tr);
+    });
+  }
+
+  function renderRising(trendData, groups, topIds) {
+    var body = $("riseBody");
+    body.innerHTML = "";
+    var results = trendData.results;
+    $("riseEmpty").style.display = results.length ? "none" : "block";
+    var byId = {};
+    groups.forEach(function (g) { byId[g.id] = g; });
+
+    results.slice(0, 15).forEach(function (res) {
+      var g = byId[res.id];
+      if (!g) return;
+      var tr = document.createElement("tr");
+      tr.addEventListener("click", function () { openModal(g); });
+      var inTop = topIds[res.id];
+      tr.innerHTML =
+        '<td class="id">' + esc(g.id) + '</td>' +
+        '<td>' + esc(g.type) + '</td>' +
+        '<td>' + sparkline(res.counts) + '</td>' +
+        '<td class="num">' + res.firstHalf + '</td>' +
+        '<td class="num">' + res.secondHalf + '</td>' +
+        '<td class="num">' + res.total + '</td>' +
+        '<td>' + (inTop ? '<span class="tag">redan i topplistan</span>' : '<span class="tag new">ej i topplistan — nytt mönster</span>') + '</td>';
+      body.appendChild(tr);
+    });
+
+    var subEl = document.querySelector(".panel.rise .head .sub");
+    if (results.length) {
+      subEl.textContent = "Beräknat per " + GRAN_LABEL[trendData.granularity] + " i vald period. Mätare där larmen ökar tydligt — kan missas i topplistan om totalantalet ännu är lågt.";
+    }
+  }
+
+  function sparkline(counts) {
+    var w = 120, h = 30, pad = 3;
+    var max = Math.max.apply(null, counts.concat([1]));
+    var stepX = (w - pad * 2) / Math.max(1, counts.length - 1);
+    var pts = counts.map(function (c, i) {
+      var x = pad + i * stepX;
+      var y = h - pad - (c / max) * (h - pad * 2);
+      return x.toFixed(1) + "," + y.toFixed(1);
+    }).join(" ");
+    return '<svg width="' + w + '" height="' + h + '" viewBox="0 0 ' + w + ' ' + h + '" style="display:block">' +
+      '<polyline points="' + pts + '" fill="none" stroke="#e5484d" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round"/>' +
+      '</svg>';
+  }
+
+  function renderTopics(rows) {
+    var counts = {};
+    rows.forEach(function (r) { counts[r.topic] = (counts[r.topic] || 0) + 1; });
+    var list = Object.keys(counts).map(function (t) { return { topic: t, n: counts[t] }; });
+    list.sort(function (a, b) { return b.n - a.n; });
+    var max = list.length ? list[0].n : 1;
+    $("topicSub").textContent = list.length + " olika larmtyper";
+    var el = $("topicList");
+    el.innerHTML = "";
+    list.forEach(function (item) {
+      var row = document.createElement("div");
+      row.className = "topic-row";
+      var pct = Math.round((item.n / max) * 100);
+      row.innerHTML = '<div class="name" title="' + esc(item.topic) + '">' + esc(item.topic) + '</div>' +
+        '<div class="bar-track"><div class="bar-fill" style="width:' + pct + '%"></div></div>' +
+        '<div class="n">' + item.n + '</div>';
+      el.appendChild(row);
+    });
+  }
+
+  function esc(s) {
+    if (s === null || s === undefined) return "";
+    return String(s).replace(/[&<>"']/g, function (c) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
+    });
+  }
+
+  // ---------- modal ----------
+  var modalBack = $("modalBack");
+  $("mClose").addEventListener("click", closeModal);
+  modalBack.addEventListener("click", function (e) { if (e.target === modalBack) closeModal(); });
+  document.addEventListener("keydown", function (e) { if (e.key === "Escape") closeModal(); });
+
+  function openModal(g) {
+    $("mTitle").textContent = g.id;
+    $("mMeta").textContent = g.type + " · " + g.org + " · " + g.count + " larm mellan " + g.first.toLocaleString("sv-SE") + " och " + g.last.toLocaleString("sv-SE");
+    var body = $("mBody");
+    body.innerHTML = "";
+    var events = g.events.slice().sort(function (a, b) { return b.timestamp - a.timestamp; });
+    events.forEach(function (e) {
+      var row = document.createElement("div");
+      row.className = "event-row";
+      row.innerHTML =
+        '<div class="top"><span>' + esc(e.topic) + '</span><span class="sev">' + esc(e.severity) + '</span></div>' +
+        '<div class="t">' + e.timestamp.toLocaleString("sv-SE") + '</div>' +
+        (e.message ? '<div class="msg">' + esc(e.message) + '</div>' : '');
+      body.appendChild(row);
+    });
+    modalBack.style.display = "flex";
+  }
+  function closeModal() { modalBack.style.display = "none"; }
+
+  // ---------- control listeners ----------
+  ["fStart", "fEnd", "fGranularity", "fMinCount"].forEach(function (id) {
+    $(id).addEventListener("change", renderAll);
+  });
+  $("fSearch").addEventListener("input", debounce(renderAll, 180));
+
+  function debounce(fn, ms) {
+    var t;
+    return function () { clearTimeout(t); t = setTimeout(fn, ms); };
+  }
+
+})();
+</script>
+</body>
+</html>
