@@ -29,15 +29,6 @@
     padding-top: env(safe-area-inset-top, 0px);
     padding-bottom: env(safe-area-inset-bottom, 0px);
   }
-  @media (prefers-color-scheme: light) {
-    :root:not([data-theme="light"]) {
-      --bg: #0a0f1a; --panel:#111a2b; --panel-2:#0d1524; --text:#dfe6f2; --text-dim:#8a97b3;
-    }
-  }
-  :root[data-theme="dark"] {
-    --bg: #0a0f1a; --panel:#111a2b; --panel-2:#0d1524; --text:#dfe6f2; --text-dim:#8a97b3;
-  }
-  html { scroll-padding-top: env(safe-area-inset-top, 0px); }
   * { box-sizing: border-box; }
   body {
     margin: 0;
@@ -91,8 +82,8 @@
     background: var(--accent); border: none; padding: 9px 16px; border-radius: 3px; cursor: pointer;
   }
   button.solid:hover { filter: brightness(1.08); }
-  #encodingNote {
-    display:none; margin-top: 14px; font-size: 0.78rem; color: var(--accent);
+  #statusNote {
+    display:none; margin-top: 14px; font-size: 0.78rem; color: var(--text-faint);
     font-family: var(--mono);
   }
 
@@ -120,6 +111,7 @@
     background: var(--bg); border: 1px solid var(--line); border-radius: 3px; padding: 6px 8px;
   }
   .field input[type="search"] { width: 200px; font-family: var(--sans); }
+  .field select#fTopic { max-width: 260px; }
   .controls .spacer { flex: 1; }
   .controls .note { font-size: 0.72rem; color: var(--text-faint); max-width: 220px; }
 
@@ -161,7 +153,10 @@
 
   /* Topic breakdown */
   .topics { padding: 14px 18px; display: flex; flex-direction: column; gap: 8px; }
-  .topic-row { display:flex; align-items:center; gap: 10px; font-size: 0.8rem; }
+  .topic-row { display:flex; align-items:center; gap: 10px; font-size: 0.8rem; cursor: pointer; padding: 4px 6px; margin: -4px -6px; border-radius: 3px; transition: background .1s; }
+  .topic-row:hover { background: #16213a; }
+  .topic-row.active { background: #1c2740; }
+  .topic-row.active .name { color: var(--accent); }
   .topic-row .name { width: 300px; flex: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-dim); font-family: var(--mono); font-size: 0.74rem; }
   .topic-row .bar-track { height: 8px; }
   .topic-row .n { width: 42px; text-align: right; font-family: var(--mono); font-size: 0.76rem; color: var(--text-dim); }
@@ -222,7 +217,7 @@
       <button class="solid" id="btnChoose" type="button">Välj fil</button>
       <button class="ghost" id="btnSample" type="button">Prova med exempeldata</button>
     </div>
-    <div id="encodingNote"></div>
+    <div id="statusNote"></div>
     <input type="file" id="fileInput" accept=".csv,.tsv,.txt">
   </div>
 
@@ -272,6 +267,12 @@
           <option value="4" selected>4</option>
           <option value="6">6</option>
           <option value="10">10</option>
+        </select>
+      </div>
+      <div class="field">
+        <label>Larmtyp</label>
+        <select id="fTopic">
+          <option value="">Alla larmtyper</option>
         </select>
       </div>
       <div class="field">
@@ -358,6 +359,20 @@
 (function () {
   "use strict";
 
+  // ============================================================
+  // Expected export columns (case-insensitive, order-independent):
+  //   Topic, Timestamp, Received, Severity, Details, Metering point,
+  //   Device, Organisation, Correlation ID, Initiated by
+  //
+  // Only Topic and Timestamp are required — everything else degrades
+  // gracefully if missing. Delimiter (comma or tab) is auto-detected
+  // from the header line.
+  // ============================================================
+
+  var CHUNK_BYTES = 4 * 1024 * 1024;
+  var SAMPLE_BYTES = 2 * 1024 * 1024;
+  var LARGE_FILE_BYTES = 8 * 1024 * 1024;
+
   var SAMPLE_TSV = "Topic\tTimestamp\tReceived\tSeverity\tDetails\tMetering point\tDevice\tOrganisation\tCorrelation ID\tInitiated by\n" +
 "Security.DeviceCommunication.UnknownCommunicationSource\t22.09.2025 15:00:39 UTC +02:00\t22.09.2025 15:00:39 UTC +02:00\tMajor\t{\"customerGuid\":\"6e857a81-4d24-488a-a1e3-f464e3d915ad\",\"topic\":\"Security.DeviceCommunication.UnknownCommunicationSource\",\"timestamp\":\"2025-09-22T13:00:39.1052939Z\",\"correlationId\":\"a13609d9-7a70-4916-9b42-5b3b7c547f11\",\"severity\":\"Major\",\"details\":{\"Message\":\"Unable to parse encrypted message. Could not find a device for a module with the source address '7941177'.\",\"CommunicationId\":\"7941177\",\"ModuleId\":\"7359992879411778\",\"GatewayDeviceId\":\"7359992886610973\"}}\t-\t-\tSundsvall\ta13609d9-7a70-4916-9b42-5b3b7c547f11\tOkänd\n" +
 "Security.DeviceCommunication.UnknownCommunicationSource\t22.09.2025 15:05:12 UTC +02:00\t22.09.2025 15:05:12 UTC +02:00\tMajor\t{\"details\":{\"Message\":\"Unable to parse encrypted message.\",\"CommunicationId\":\"5024799\",\"ModuleId\":\"7359993050247995\",\"GatewayDeviceId\":\"7359992932488921\"}}\t-\t-\tSundsvall\tfa53ba0c-7941-4644-97db-748291d2e9b2\tOkänd\n" +
@@ -378,7 +393,7 @@
 
   // ---------- state ----------
   var state = {
-    rows: [],          // all parsed rows {topic,timestamp(Date),severity,message,meterId,meterType,org,correlationId}
+    rows: [],          // all parsed events {topic,timestamp(Date),severity,message,meterId,meterType,org,correlationId}
     minDate: null,
     maxDate: null
   };
@@ -396,177 +411,155 @@
   tickClock();
   setInterval(tickClock, 1000);
 
-  // ---------- file handling ----------
-  $("btnChoose").addEventListener("click", function () { fileInput.click(); });
-  uploadZone.addEventListener("click", function (e) {
-    if (e.target.closest("button")) return;
-    fileInput.click();
-  });
-  fileInput.addEventListener("change", function () {
-    if (fileInput.files && fileInput.files[0]) readFile(fileInput.files[0]);
-  });
-  ["dragenter", "dragover"].forEach(function (ev) {
-    uploadZone.addEventListener(ev, function (e) { e.preventDefault(); uploadZone.classList.add("drag"); });
-  });
-  ["dragleave", "drop"].forEach(function (ev) {
-    uploadZone.addEventListener(ev, function (e) { e.preventDefault(); uploadZone.classList.remove("drag"); });
-  });
-  uploadZone.addEventListener("drop", function (e) {
-    var f = e.dataTransfer.files && e.dataTransfer.files[0];
-    if (f) readFile(f);
-  });
-  $("btnSample").addEventListener("click", function () {
-    loadText(SAMPLE_TSV, false);
-  });
-  $("btnReset").addEventListener("click", function () {
-    dashboard.style.display = "none";
-    uploadZone.style.display = "";
-    $("encodingNote").style.display = "none";
-    fileInput.value = "";
-  });
+  // ============================================================
+  // File reading — chunked, so a large export is never held in
+  // memory as a single ArrayBuffer + a single decoded string + a
+  // single giant rows array all at once.
+  // ============================================================
 
-  function readFile(file) {
-    var reader = new FileReader();
-    reader.onload = function () {
-      var buf = new Uint8Array(reader.result);
-      var text = new TextDecoder("utf-8").decode(buf);
-      var fixed = maybeFixMojibake(text);
-      loadText(fixed.text, fixed.fixed);
-    };
-    reader.readAsArrayBuffer(file);
+  function readBlobAsArrayBuffer(blob) {
+    return new Promise(function (resolve, reject) {
+      var reader = new FileReader();
+      reader.onload = function () { resolve(reader.result); };
+      reader.onerror = function () { reject(reader.error || new Error("Kunde inte läsa filen.")); };
+      reader.readAsArrayBuffer(blob);
+    });
   }
 
-  function maybeFixMojibake(text) {
-    // Heuristic: exports sometimes double-encode UTF-8 as if it were Latin-1,
-    // producing sequences like "Ã¤" instead of "ä". Detect and repair.
+  function readBlobAsText(blob) {
+    return readBlobAsArrayBuffer(blob).then(function (buf) {
+      return new TextDecoder("utf-8").decode(new Uint8Array(buf));
+    });
+  }
+
+  function stripBom(s) {
+    return s.charCodeAt(0) === 0xFEFF ? s.slice(1) : s;
+  }
+
+  // ============================================================
+  // Mojibake repair — exports sometimes double-encode UTF-8 as if
+  // it were Latin-1, producing sequences like "Ã¤" instead of "ä".
+  // Detection runs once on a sample; the actual repair is applied
+  // per complete field during parsing (never on a partial chunk,
+  // since a chunk boundary could otherwise fall inside a byte pair).
+  // ============================================================
+
+  function looksMojibake(text) {
     var suspects = (text.match(/Ã./g) || []).length;
-    if (suspects < 2) return { text: text, fixed: false };
-    try {
-      var bytes = [];
-      var ok = true;
-      for (var i = 0; i < text.length; i++) {
-        var c = text.charCodeAt(i);
-        if (c > 255) { ok = false; break; }
-        bytes.push(c);
-      }
-      if (!ok) return { text: text, fixed: false };
-      var repaired = new TextDecoder("utf-8").decode(new Uint8Array(bytes));
-      var stillBad = (repaired.match(/Ã./g) || []).length;
-      if (stillBad < suspects) return { text: repaired, fixed: true };
-      return { text: text, fixed: false };
-    } catch (e) {
-      return { text: text, fixed: false };
-    }
-  }
-
-  function loadText(text, wasFixed) {
-    var note = $("encodingNote");
-    if (wasFixed) {
-      note.style.display = "block";
-      note.textContent = "Teckenkodningen korrigerades automatiskt (t.ex. Ã¤ → ä).";
-    } else {
-      note.style.display = "none";
-    }
-    try {
-      var rows = parseDelimited(text);
-      if (!rows.length) throw new Error("Filen verkar tom.");
-      var header = rows[0].map(function (h) { return h.trim().toLowerCase(); });
-      var idx = {
-        topic: header.indexOf("topic"),
-        timestamp: header.indexOf("timestamp"),
-        severity: header.indexOf("severity"),
-        details: header.indexOf("details"),
-        meteringPoint: header.indexOf("metering point"),
-        device: header.indexOf("device"),
-        organisation: header.indexOf("organisation"),
-        correlationId: header.indexOf("correlation id")
-      };
-      if (idx.topic === -1 || idx.timestamp === -1) {
-        throw new Error("Hittar inte kolumnerna 'Topic' och 'Timestamp' i filen.");
-      }
-      var parsed = [];
-      for (var r = 1; r < rows.length; r++) {
-        var cols = rows[r];
-        if (cols.length < 2 || (cols.length === 1 && cols[0] === "")) continue;
-        var ts = parseTimestamp(cols[idx.timestamp] || "");
-        if (!ts) continue;
-        var detailsRaw = idx.details > -1 ? cols[idx.details] : "";
-        var parsedDetails = safeParseJSON(detailsRaw);
-        var mp = idx.meteringPoint > -1 ? (cols[idx.meteringPoint] || "").trim() : "";
-        var dev = idx.device > -1 ? (cols[idx.device] || "").trim() : "";
-        var ident = resolveMeterIdentity(mp, dev, parsedDetails);
-        parsed.push({
-          topic: (cols[idx.topic] || "").trim(),
-          timestamp: ts,
-          severity: idx.severity > -1 ? (cols[idx.severity] || "").trim() : "",
-          message: extractMessage(parsedDetails),
-          meterId: ident.id,
-          meterType: ident.type,
-          org: idx.organisation > -1 ? (cols[idx.organisation] || "").trim() : "",
-          correlationId: idx.correlationId > -1 ? (cols[idx.correlationId] || "").trim() : ""
-        });
-      }
-      if (!parsed.length) throw new Error("Inga giltiga rader kunde tolkas ur filen.");
-      parsed.sort(function (a, b) { return a.timestamp - b.timestamp; });
-      state.rows = parsed;
-      state.minDate = parsed[0].timestamp;
-      state.maxDate = parsed[parsed.length - 1].timestamp;
-
-      uploadZone.style.display = "none";
-      dashboard.style.display = "block";
-      $("fStart").value = toLocalInputValue(state.minDate);
-      $("fEnd").value = toLocalInputValue(state.maxDate);
-      renderAll();
-    } catch (err) {
-      note.style.display = "block";
-      note.style.color = "var(--rising)";
-      note.textContent = "Kunde inte tolka filen: " + err.message;
-    }
-  }
-
-  // ---------- delimited parsing (comma or tab, quote-aware) ----------
-  function parseDelimited(text) {
-    text = text.replace(/^\uFEFF/, "");
-    var firstLineEnd = text.indexOf("\n");
-    var firstLine = firstLineEnd === -1 ? text : text.slice(0, firstLineEnd);
-    var tabCount = (firstLine.match(/\t/g) || []).length;
-    var commaCount = (firstLine.match(/,/g) || []).length;
-    var delim = tabCount >= commaCount ? "\t" : ",";
-
-    var rows = [];
-    var row = [];
-    var field = "";
-    var inQuotes = false;
+    if (suspects < 2) return false;
+    var bytes = [];
     for (var i = 0; i < text.length; i++) {
-      var c = text[i];
-      if (inQuotes) {
-        if (c === '"') {
-          if (text[i + 1] === '"') { field += '"'; i++; }
-          else inQuotes = false;
-        } else field += c;
-      } else {
-        if (c === '"') inQuotes = true;
-        else if (c === delim) { row.push(field); field = ""; }
-        else if (c === "\r") { /* skip */ }
-        else if (c === "\n") { row.push(field); rows.push(row); row = []; field = ""; }
-        else field += c;
+      var c = text.charCodeAt(i);
+      if (c > 255) return false;
+      bytes.push(c);
+    }
+    var repaired = new TextDecoder("utf-8").decode(new Uint8Array(bytes));
+    var stillBad = (repaired.match(/Ã./g) || []).length;
+    return stillBad < suspects;
+  }
+
+  function fixMojibakeField(s) {
+    if (s.indexOf("Ã") === -1) return s;
+    var bytes = [];
+    for (var i = 0; i < s.length; i++) {
+      var c = s.charCodeAt(i);
+      if (c > 255) return s;
+      bytes.push(c);
+    }
+    try { return new TextDecoder("utf-8").decode(new Uint8Array(bytes)); }
+    catch (e) { return s; }
+  }
+
+  // ============================================================
+  // Delimited-text parsing (comma or tab, quote-aware), fed one
+  // chunk of text at a time. A field is only treated as CSV-quoted
+  // if it *starts* with a quote — a stray unescaped quote in the
+  // middle of an already-started field (e.g. raw JSON in a Details
+  // column) is just a literal character, not the start of a quoted
+  // region. Without that rule, embedded JSON like
+  // {"DeviceId":"123"} gets every quote stripped out, which quietly
+  // breaks JSON.parse downstream.
+  // ============================================================
+
+  function detectDelimiter(firstLine) {
+    // Swedish/European Excel "Save as CSV" defaults to semicolons, since
+    // comma is the decimal separator in that locale — so semicolon has to
+    // be a candidate alongside tab and comma, not just an afterthought.
+    var candidates = { "\t": 0, ",": 0, ";": 0 };
+    Object.keys(candidates).forEach(function (d) {
+      candidates[d] = firstLine.split(d).length - 1;
+    });
+    var best = "\t";
+    Object.keys(candidates).forEach(function (d) {
+      if (candidates[d] > candidates[best]) best = d;
+    });
+    return candidates[best] > 0 ? best : "\t";
+  }
+
+  function createRowParser(delim) {
+    var field = "", row = [], inQuotes = false, atFieldStart = true, pendingQuote = false;
+
+    function feed(text, onRow) {
+      var i = 0;
+      if (pendingQuote) {
+        pendingQuote = false;
+        if (text.charAt(0) === '"') { field += '"'; i = 1; }
+        else { inQuotes = false; }
+      }
+      for (; i < text.length; i++) {
+        var c = text.charAt(i);
+        if (inQuotes) {
+          if (c === '"') {
+            if (i + 1 < text.length) {
+              if (text.charAt(i + 1) === '"') { field += '"'; i++; }
+              else inQuotes = false;
+            } else { pendingQuote = true; return; }
+          } else field += c;
+        } else if (atFieldStart && c === '"') {
+          inQuotes = true; atFieldStart = false;
+        } else if (c === delim) {
+          row.push(field); field = ""; atFieldStart = true;
+        } else if (c === "\r") {
+          /* skip */
+        } else if (c === "\n") {
+          row.push(field); onRow(row); row = []; field = ""; atFieldStart = true;
+        } else {
+          field += c; atFieldStart = false;
+        }
       }
     }
-    if (field.length || row.length) { row.push(field); rows.push(row); }
-    return rows.filter(function (r) { return !(r.length === 1 && r[0].trim() === ""); });
+
+    function flush(onRow) {
+      if (field.length || row.length) { row.push(field); onRow(row); row = []; field = ""; }
+    }
+
+    return { feed: feed, flush: flush };
   }
+
+  // ============================================================
+  // Timestamp parsing. Primary format seen in exports:
+  //   "DD.MM.YYYY HH:MM:SS UTC +HH:MM"
+  // Falls back to native Date parsing (covers ISO 8601 etc).
+  // ============================================================
+
+  var TS_RE = /^(\d{2})\.(\d{2})\.(\d{4})\s+(\d{2}):(\d{2}):(\d{2})\s*UTC\s*([+-]\d{2}):?(\d{2})$/;
 
   function parseTimestamp(s) {
     s = (s || "").trim();
-    var m = s.match(/^(\d{2})\.(\d{2})\.(\d{4})\s+(\d{2}):(\d{2}):(\d{2})\s*UTC\s*([+-]\d{2}):?(\d{2})$/);
+    var m = s.match(TS_RE);
     if (m) {
-      var iso = m[3] + "-" + m[2] + "-" + m[1] + "T" + m[4] + ":" + m[5] + ":" + m[6] + m[7] + ":" + m[9];
+      var day = m[1], month = m[2], year = m[3], hh = m[4], mm = m[5], ss = m[6], offH = m[7], offM = m[8];
+      var iso = year + "-" + month + "-" + day + "T" + hh + ":" + mm + ":" + ss + offH + ":" + offM;
       var d = new Date(iso);
       if (!isNaN(d)) return d;
     }
     var d2 = new Date(s);
     return isNaN(d2) ? null : d2;
   }
+
+  // ============================================================
+  // Turning a row's raw JSON Details blob into a message + meter identity
+  // ============================================================
 
   function safeParseJSON(s) {
     if (!s) return null;
@@ -592,19 +585,242 @@
     return { id: "Okänd", type: "Okänd" };
   }
 
-  function toLocalInputValue(d) {
-    var pad = function (n) { return String(n).padStart(2, "0"); };
-    return d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate()) + "T" + pad(d.getHours()) + ":" + pad(d.getMinutes());
+  // ============================================================
+  // Ingest — turns parsed rows into event objects, one row at a time,
+  // so a huge file never needs an intermediate "all raw rows" array.
+  // ============================================================
+
+  function createIngest() {
+    var idx = null, events = [], rowIndex = 0;
+
+    function handleRow(cols) {
+      if (rowIndex === 0) {
+        rowIndex++;
+        var header = cols.map(function (h) { return h.trim().toLowerCase(); });
+        idx = {
+          topic: header.indexOf("topic"),
+          timestamp: header.indexOf("timestamp"),
+          severity: header.indexOf("severity"),
+          details: header.indexOf("details"),
+          meteringPoint: header.indexOf("metering point"),
+          device: header.indexOf("device"),
+          organisation: header.indexOf("organisation"),
+          correlationId: header.indexOf("correlation id")
+        };
+        if (idx.topic === -1 || idx.timestamp === -1) {
+          throw new Error("Hittar inte kolumnerna 'Topic' och 'Timestamp' i filen.");
+        }
+        return;
+      }
+      rowIndex++;
+      if (cols.length < 2 || (cols.length === 1 && cols[0] === "")) return;
+      var ts = parseTimestamp(cols[idx.timestamp] || "");
+      if (!ts) return;
+      var detailsRaw = idx.details > -1 ? cols[idx.details] : "";
+      var details = safeParseJSON(detailsRaw);
+      var mp = idx.meteringPoint > -1 ? (cols[idx.meteringPoint] || "").trim() : "";
+      var dev = idx.device > -1 ? (cols[idx.device] || "").trim() : "";
+      var ident = resolveMeterIdentity(mp, dev, details);
+      events.push({
+        topic: (cols[idx.topic] || "").trim(),
+        timestamp: ts,
+        severity: idx.severity > -1 ? (cols[idx.severity] || "").trim() : "",
+        message: extractMessage(details),
+        meterId: ident.id,
+        meterType: ident.type,
+        org: idx.organisation > -1 ? (cols[idx.organisation] || "").trim() : "",
+        correlationId: idx.correlationId > -1 ? (cols[idx.correlationId] || "").trim() : ""
+      });
+    }
+
+    function finalize() {
+      if (rowIndex === 0) throw new Error("Filen verkar tom.");
+      if (!events.length) throw new Error("Inga giltiga rader kunde tolkas ur filen.");
+      events.sort(function (a, b) { return a.timestamp - b.timestamp; });
+      return events;
+    }
+
+    return { handleRow: handleRow, finalize: finalize };
   }
 
-  // ---------- filtering + aggregation ----------
-  function getFiltered() {
+  // ============================================================
+  // Orchestration: sample-based mojibake detection, then a chunked
+  // streaming pass that never holds more than one chunk of raw text
+  // in memory alongside the growing event list.
+  // ============================================================
+
+  function setStatus(text, color) {
+    var note = $("statusNote");
+    note.style.display = "block";
+    note.style.color = color || "var(--text-faint)";
+    note.textContent = text;
+  }
+
+  function clearStatus() {
+    $("statusNote").style.display = "none";
+  }
+
+  function readFile(file) {
+    setStatus("Läser in fil …");
+    readBlobAsText(file.slice(0, Math.min(SAMPLE_BYTES, file.size)))
+      .then(function (sample) {
+        var mojibakeFix = looksMojibake(sample);
+        return processFileStream(file, mojibakeFix);
+      })
+      .then(function (result) {
+        onFileLoaded(result.events, result.mojibakeFixed);
+      })
+      .catch(function (err) {
+        setStatus("Kunde inte tolka filen: " + err.message, "var(--rising)");
+      });
+  }
+
+  async function processFileStream(file, mojibakeFix) {
+    var decoder = new TextDecoder("utf-8");
+    var ingest = createIngest();
+    var parser = null;
+    var headerBuffer = "";
+    var offset = 0;
+    var firstChunk = true;
+
+    function onRow(cols) {
+      if (mojibakeFix) {
+        for (var i = 0; i < cols.length; i++) cols[i] = fixMojibakeField(cols[i]);
+      }
+      ingest.handleRow(cols);
+    }
+
+    while (offset < file.size) {
+      var slice = file.slice(offset, offset + CHUNK_BYTES);
+      var buf = await readBlobAsArrayBuffer(slice);
+      offset += CHUNK_BYTES;
+      var isLast = offset >= file.size;
+      var chunkText = decoder.decode(new Uint8Array(buf), { stream: !isLast });
+      if (firstChunk) { chunkText = stripBom(chunkText); firstChunk = false; }
+
+      if (!parser) {
+        headerBuffer += chunkText;
+        var nl = headerBuffer.indexOf("\n");
+        if (nl === -1 && !isLast) continue;
+        parser = createRowParser(detectDelimiter(nl === -1 ? headerBuffer : headerBuffer.slice(0, nl)));
+        chunkText = headerBuffer;
+        headerBuffer = "";
+      }
+
+      parser.feed(chunkText, onRow);
+      if (isLast) parser.flush(onRow);
+
+      if (file.size > LARGE_FILE_BYTES) {
+        setStatus("Läser in fil … " + Math.min(100, Math.round((offset / file.size) * 100)) + "%");
+      }
+    }
+
+    return { events: ingest.finalize(), mojibakeFixed: mojibakeFix };
+  }
+
+  function loadText(text, wasFixed) {
+    try {
+      text = stripBom(text);
+      var firstLineEnd = text.indexOf("\n");
+      var delim = detectDelimiter(firstLineEnd === -1 ? text : text.slice(0, firstLineEnd));
+      var parser = createRowParser(delim);
+      var ingest = createIngest();
+      var onRow = function (cols) { ingest.handleRow(cols); };
+      parser.feed(text, onRow);
+      parser.flush(onRow);
+      onFileLoaded(ingest.finalize(), wasFixed);
+    } catch (err) {
+      setStatus("Kunde inte tolka filen: " + err.message, "var(--rising)");
+    }
+  }
+
+  function onFileLoaded(events, mojibakeFixed) {
+    if (mojibakeFixed) {
+      setStatus("Teckenkodningen korrigerades automatiskt (t.ex. Ã¤ → ä).", "var(--accent)");
+    } else {
+      clearStatus();
+    }
+    state.rows = events;
+    state.minDate = events[0].timestamp;
+    state.maxDate = events[events.length - 1].timestamp;
+
+    uploadZone.style.display = "none";
+    dashboard.style.display = "block";
+    $("fStart").value = toLocalInputValue(state.minDate);
+    $("fEnd").value = toLocalInputValue(state.maxDate, true);
+    populateTopicOptions(events);
+    renderAll();
+  }
+
+  function populateTopicOptions(events) {
+    var counts = {};
+    events.forEach(function (r) { counts[r.topic] = (counts[r.topic] || 0) + 1; });
+    var topics = Object.keys(counts).sort(function (a, b) { return counts[b] - counts[a]; });
+    var select = $("fTopic");
+    select.innerHTML = '<option value="">Alla larmtyper</option>';
+    topics.forEach(function (t) {
+      var opt = document.createElement("option");
+      opt.value = t;
+      opt.textContent = t + " (" + counts[t] + ")";
+      select.appendChild(opt);
+    });
+  }
+
+  // The datetime-local input only has minute resolution. Truncating a max
+  // timestamp down to the minute would silently exclude any event that falls
+  // in the remaining seconds of that minute from the default view, so the
+  // upper bound has to round up instead.
+  function toLocalInputValue(d, roundUp) {
+    var pad = function (n) { return String(n).padStart(2, "0"); };
+    var v = d;
+    if (roundUp && (d.getSeconds() > 0 || d.getMilliseconds() > 0)) {
+      v = new Date(d.getTime() + (60000 - (d.getSeconds() * 1000 + d.getMilliseconds())));
+    }
+    return v.getFullYear() + "-" + pad(v.getMonth() + 1) + "-" + pad(v.getDate()) + "T" + pad(v.getHours()) + ":" + pad(v.getMinutes());
+  }
+
+  // ---------- upload wiring ----------
+  $("btnChoose").addEventListener("click", function () { fileInput.click(); });
+  uploadZone.addEventListener("click", function (e) {
+    if (e.target.closest("button")) return;
+    fileInput.click();
+  });
+  fileInput.addEventListener("change", function () {
+    if (fileInput.files && fileInput.files[0]) readFile(fileInput.files[0]);
+  });
+  ["dragenter", "dragover"].forEach(function (ev) {
+    uploadZone.addEventListener(ev, function (e) { e.preventDefault(); uploadZone.classList.add("drag"); });
+  });
+  ["dragleave", "drop"].forEach(function (ev) {
+    uploadZone.addEventListener(ev, function (e) { e.preventDefault(); uploadZone.classList.remove("drag"); });
+  });
+  uploadZone.addEventListener("drop", function (e) {
+    var f = e.dataTransfer.files && e.dataTransfer.files[0];
+    if (f) readFile(f);
+  });
+  $("btnSample").addEventListener("click", function () {
+    loadText(SAMPLE_TSV, false);
+  });
+  $("btnReset").addEventListener("click", function () {
+    dashboard.style.display = "none";
+    uploadZone.style.display = "";
+    clearStatus();
+    fileInput.value = "";
+  });
+
+  // ============================================================
+  // Filtering + aggregation
+  // ============================================================
+
+  function getFiltered(opts) {
     var start = $("fStart").value ? new Date($("fStart").value) : state.minDate;
     var end = $("fEnd").value ? new Date($("fEnd").value) : state.maxDate;
     var search = $("fSearch").value.trim().toLowerCase();
+    var topic = (opts && opts.ignoreTopic) ? "" : $("fTopic").value;
     return state.rows.filter(function (r) {
       if (r.timestamp < start || r.timestamp > end) return false;
       if (search && r.meterId.toLowerCase().indexOf(search) === -1) return false;
+      if (topic && r.topic !== topic) return false;
       return true;
     });
   }
@@ -633,7 +849,11 @@
     return best;
   }
 
-  // ---------- bucketing / trend ----------
+  // ============================================================
+  // Trend detection: bucket each meter's alarms by hour/day/week and
+  // run a linear regression to flag meters that are clearly ramping up.
+  // ============================================================
+
   function chooseGranularity(spanMs) {
     var g = $("fGranularity").value;
     if (g !== "auto") return g;
@@ -712,15 +932,12 @@
       var counts = byMeter[id];
       var total = counts.reduce(function (a, b) { return a + b; }, 0);
       if (total < minCount || counts.length < 3) return;
-      var third = Math.max(1, Math.floor(counts.length / 3));
-      var firstSum = counts.slice(0, third).reduce(function (a, b) { return a + b; }, 0);
-      var lastSum = counts.slice(counts.length - third).reduce(function (a, b) { return a + b; }, 0);
       var reg = linreg(xs, counts);
-      var isRising = reg.slope > 0.08 && reg.r > 0.35 && lastSum > firstSum && lastSum >= 2;
+      var halfIdx = Math.floor(counts.length / 2);
+      var firstHalf = counts.slice(0, halfIdx).reduce(function (a, b) { return a + b; }, 0);
+      var secondHalf = counts.slice(halfIdx).reduce(function (a, b) { return a + b; }, 0);
+      var isRising = reg.slope > 0.08 && reg.r > 0.35 && secondHalf > firstHalf && secondHalf >= 2;
       if (isRising) {
-        var halfIdx = Math.floor(counts.length / 2);
-        var firstHalf = counts.slice(0, halfIdx).reduce(function (a, b) { return a + b; }, 0);
-        var secondHalf = counts.slice(halfIdx).reduce(function (a, b) { return a + b; }, 0);
         results.push({ id: id, counts: counts, total: total, slope: reg.slope, r: reg.r, firstHalf: firstHalf, secondHalf: secondHalf });
       }
     });
@@ -730,7 +947,10 @@
 
   var GRAN_LABEL = { hour: "timme", day: "dag", week: "vecka" };
 
-  // ---------- rendering ----------
+  // ============================================================
+  // Rendering
+  // ============================================================
+
   function renderAll() {
     var filtered = getFiltered();
     var groups = groupByMeter(filtered);
@@ -742,7 +962,6 @@
     var topIds = {};
     groups.slice(0, 10).forEach(function (g) { topIds[g.id] = true; });
 
-    // stats
     $("statTotal").textContent = filtered.length.toLocaleString("sv-SE");
     $("statMeters").textContent = groups.length.toLocaleString("sv-SE");
     $("statTop").textContent = groups.length ? shortId(groups[0].id) : "–";
@@ -751,19 +970,16 @@
       ? "Data i filen sträcker sig " + state.minDate.toLocaleString("sv-SE") + " – " + state.maxDate.toLocaleString("sv-SE")
       : "";
 
-    renderTop(groups, filtered.length, topIds);
+    renderTop(groups, filtered.length);
     renderRising(trendData, groups, topIds);
-    renderTopics(filtered);
-
-    window.__meterGroups = {};
-    groups.forEach(function (g) { window.__meterGroups[g.id] = g; });
+    renderTopics(getFiltered({ ignoreTopic: true }), $("fTopic").value);
   }
 
   function shortId(id) {
     return id.length > 14 ? id.slice(0, 6) + "…" + id.slice(-4) : id;
   }
 
-  function renderTop(groups, totalCount, topIds) {
+  function renderTop(groups, totalCount) {
     var body = $("topBody");
     body.innerHTML = "";
     $("topSub").textContent = groups.length ? ("Topp " + Math.min(15, groups.length) + " av " + groups.length) : "";
@@ -834,22 +1050,27 @@
       '</svg>';
   }
 
-  function renderTopics(rows) {
+  function renderTopics(rows, activeTopic) {
     var counts = {};
     rows.forEach(function (r) { counts[r.topic] = (counts[r.topic] || 0) + 1; });
     var list = Object.keys(counts).map(function (t) { return { topic: t, n: counts[t] }; });
     list.sort(function (a, b) { return b.n - a.n; });
     var max = list.length ? list[0].n : 1;
-    $("topicSub").textContent = list.length + " olika larmtyper";
+    $("topicSub").textContent = list.length + " olika larmtyper — klicka för att filtrera";
     var el = $("topicList");
     el.innerHTML = "";
     list.forEach(function (item) {
       var row = document.createElement("div");
-      row.className = "topic-row";
+      row.className = "topic-row" + (item.topic === activeTopic ? " active" : "");
+      row.title = "Klicka för att filtrera på " + item.topic;
       var pct = Math.round((item.n / max) * 100);
       row.innerHTML = '<div class="name" title="' + esc(item.topic) + '">' + esc(item.topic) + '</div>' +
         '<div class="bar-track"><div class="bar-fill" style="width:' + pct + '%"></div></div>' +
         '<div class="n">' + item.n + '</div>';
+      row.addEventListener("click", function () {
+        $("fTopic").value = (item.topic === $("fTopic").value) ? "" : item.topic;
+        renderAll();
+      });
       el.appendChild(row);
     });
   }
@@ -887,7 +1108,7 @@
   function closeModal() { modalBack.style.display = "none"; }
 
   // ---------- control listeners ----------
-  ["fStart", "fEnd", "fGranularity", "fMinCount"].forEach(function (id) {
+  ["fStart", "fEnd", "fGranularity", "fMinCount", "fTopic"].forEach(function (id) {
     $(id).addEventListener("change", renderAll);
   });
   $("fSearch").addEventListener("input", debounce(renderAll, 180));
