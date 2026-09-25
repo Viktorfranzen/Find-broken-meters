@@ -281,10 +281,16 @@
         <label>Sök mätare/enhet-id</label>
         <input type="search" id="fSearch" placeholder="t.ex. 735999...">
       </div>
+      <div class="field">
+        <label>Uppsatta mätare (valfritt)</label>
+        <button class="ghost" id="btnLoadInstalled" type="button">Ladda upp lista</button>
+        <input type="file" id="installedFileInput" accept=".csv,.tsv,.txt" style="display:none">
+      </div>
       <div class="spacer"></div>
       <div class="note" id="rangeNote"></div>
       <button class="ghost" id="btnReset" type="button">Ny fil</button>
     </div>
+    <div id="installedStatus" style="margin: -14px 0 22px 4px; font-size: 0.74rem; color: var(--text-faint); font-family: var(--mono);"></div>
 
     <div class="panel">
       <div class="head">
@@ -410,7 +416,8 @@
   var state = {
     rows: [],          // all parsed events {topic,timestamp(Date),severity,message,meterId,meterType,org,correlationId}
     minDate: null,
-    maxDate: null
+    maxDate: null,
+    installedDeviceIds: null  // Set of device ids from the optional "installed meters" file, or null if not loaded
   };
 
   // ---------- dom ----------
@@ -690,20 +697,15 @@
       });
   }
 
-  async function processFileStream(file, mojibakeFix) {
+  // Chunked read + parse, shared by both the alarm export and the optional
+  // installed-meters file: never holds more than one chunk of raw text in
+  // memory alongside whatever the caller's onRow callback accumulates.
+  async function streamRows(file, onRow, progressLabel) {
     var decoder = new TextDecoder("utf-8");
-    var ingest = createIngest();
     var parser = null;
     var headerBuffer = "";
     var offset = 0;
     var firstChunk = true;
-
-    function onRow(cols) {
-      if (mojibakeFix) {
-        for (var i = 0; i < cols.length; i++) cols[i] = fixMojibakeField(cols[i]);
-      }
-      ingest.handleRow(cols);
-    }
 
     while (offset < file.size) {
       var slice = file.slice(offset, offset + CHUNK_BYTES);
@@ -726,11 +728,44 @@
       if (isLast) parser.flush(onRow);
 
       if (file.size > LARGE_FILE_BYTES) {
-        setStatus("Läser in fil … " + Math.min(100, Math.round((offset / file.size) * 100)) + "%");
+        setStatus(progressLabel + " … " + Math.min(100, Math.round((offset / file.size) * 100)) + "%");
       }
     }
+  }
 
+  async function processFileStream(file, mojibakeFix) {
+    var ingest = createIngest();
+    function onRow(cols) {
+      if (mojibakeFix) {
+        for (var i = 0; i < cols.length; i++) cols[i] = fixMojibakeField(cols[i]);
+      }
+      ingest.handleRow(cols);
+    }
+    await streamRows(file, onRow, "Läser in fil");
     return { events: ingest.finalize(), mojibakeFixed: mojibakeFix };
+  }
+
+  // Only the "Apparatnr" column is extracted — any other column present
+  // (e.g. Apparattyp, Status) is read past but never stored.
+  async function processInstalledMetersFile(file) {
+    var idx = -1;
+    var rowIndex = 0;
+    var ids = new Set();
+    function onRow(cols) {
+      if (rowIndex === 0) {
+        rowIndex++;
+        var header = cols.map(function (h) { return h.trim().toLowerCase(); });
+        idx = header.indexOf("apparatnr");
+        if (idx === -1) throw new Error("Hittar inte kolumnen 'Apparatnr' i filen.");
+        return;
+      }
+      rowIndex++;
+      var v = (cols[idx] || "").trim();
+      if (v && v !== "-") ids.add(v);
+    }
+    await streamRows(file, onRow, "Läser in lista över uppsatta mätare");
+    if (rowIndex === 0) throw new Error("Filen verkar tom.");
+    return ids;
   }
 
   function loadText(text, wasFixed) {
@@ -758,13 +793,45 @@
     state.rows = events;
     state.minDate = events[0].timestamp;
     state.maxDate = events[events.length - 1].timestamp;
+    state.installedDeviceIds = null;
 
     uploadZone.style.display = "none";
     dashboard.style.display = "block";
     $("fStart").value = toLocalInputValue(state.minDate);
     $("fEnd").value = toLocalInputValue(state.maxDate, true);
     populateTopicOptions(events);
+    updateInstalledStatus();
     renderAll();
+  }
+
+  function readInstalledMetersFile(file) {
+    $("installedStatus").textContent = "Läser in lista över uppsatta mätare …";
+    processInstalledMetersFile(file)
+      .then(function (ids) {
+        state.installedDeviceIds = ids;
+        updateInstalledStatus();
+        renderAll();
+      })
+      .catch(function (err) {
+        // Leave any previously loaded filter in place — a failed re-upload
+        // shouldn't silently discard a filter that was already working.
+        $("installedStatus").innerHTML = '<span style="color:var(--rising)">Kunde inte tolka filen: ' + esc(err.message) + '</span>';
+      });
+  }
+
+  function updateInstalledStatus() {
+    var el = $("installedStatus");
+    if (!state.installedDeviceIds) { el.innerHTML = ""; return; }
+    var matched = state.rows.filter(function (r) { return state.installedDeviceIds.has(r.meterId); }).length;
+    el.innerHTML = state.installedDeviceIds.size.toLocaleString("sv-SE") + " enheter i listan · " +
+      matched.toLocaleString("sv-SE") + " av " + state.rows.length.toLocaleString("sv-SE") + " larm matchar en uppsatt mätare · " +
+      '<a href="#" id="btnClearInstalled" style="color:var(--rising)">Ta bort filter</a>';
+    $("btnClearInstalled").addEventListener("click", function (e) {
+      e.preventDefault();
+      state.installedDeviceIds = null;
+      updateInstalledStatus();
+      renderAll();
+    });
   }
 
   function populateTopicOptions(events) {
@@ -821,6 +888,14 @@
     uploadZone.style.display = "";
     clearStatus();
     fileInput.value = "";
+    state.installedDeviceIds = null;
+    updateInstalledStatus();
+  });
+
+  $("btnLoadInstalled").addEventListener("click", function () { $("installedFileInput").click(); });
+  $("installedFileInput").addEventListener("change", function () {
+    if (this.files && this.files[0]) readInstalledMetersFile(this.files[0]);
+    this.value = "";
   });
 
   // ============================================================
@@ -836,6 +911,7 @@
       if (r.timestamp < start || r.timestamp > end) return false;
       if (search && r.meterId.toLowerCase().indexOf(search) === -1) return false;
       if (topic && r.topic !== topic) return false;
+      if (state.installedDeviceIds && !state.installedDeviceIds.has(r.meterId)) return false;
       return true;
     });
   }

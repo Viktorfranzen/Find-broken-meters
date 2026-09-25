@@ -35,6 +35,14 @@ Ingen backend, inget byggsteg — allt körs i webbläsaren.
 - **Exportera CSV** — varje vy (Topplista, Stigande larmtrend, Larmtyper samt
   detaljvyn för en enskild mätare) har en egen exportknapp. Exporten tar med
   all data som matchar aktuella filter, inte bara de rader som visas på skärmen.
+- **Filtrera på uppsatta mätare (valfritt)** — ladda upp en separat CSV/TSV-fil
+  med kolumnen `Apparatnr` (övriga kolumner, t.ex. Apparattyp och Status,
+  läses förbi och sparas aldrig) för att bara visa larm från mätare som
+  faktiskt är uppsatta. Matchas mot samma id som redan används överallt i
+  appen, så larm som identifierats via JSON-fallback (t.ex.
+  `UnknownCommunicationSource`) täcks in också. Statusraden visar hur många
+  enheter listan innehöll och hur många larm som matchade, med en
+  "Ta bort filter"-länk för att gå tillbaka till allt.
 
 ## Använda appen
 
@@ -67,6 +75,8 @@ intranät …) — filen är helt fristående.
   räknas som "stigande trend" (minsta fönsterstorlek, hur strikt den
   Bonferroni-korrigerade signifikansnivån är, minsta antal larm i ett fönster).
 - `detectDelimiter()` — vilka tecken som provas som kolumnavgränsare.
+- `processInstalledMetersFile()` — vilket kolumnnamn (`Apparatnr`) som letas
+  upp i filen med uppsatta mätare.
 - CSS-variablerna högst upp i `<style>` — färgtema.
 
 ## Licens
