@@ -77,6 +77,8 @@
     cursor: pointer; transition: border-color .15s, color .15s;
   }
   button.ghost:hover { border-color: var(--accent); color: var(--accent); }
+  button.ghost.small { font-size: 0.72rem; padding: 5px 10px; flex: none; }
+  .head-right { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; justify-content: flex-end; }
   button.solid {
     font-family: var(--sans); font-size: 0.82rem; font-weight: 600; color: #1b1305;
     background: var(--accent); border: none; padding: 9px 16px; border-radius: 3px; cursor: pointer;
@@ -287,7 +289,10 @@
     <div class="panel">
       <div class="head">
         <h2>Mest larmande mätare</h2>
-        <span class="sub" id="topSub"></span>
+        <div class="head-right">
+          <span class="sub" id="topSub"></span>
+          <button class="ghost small" id="btnExportTop" type="button">Exportera CSV</button>
+        </div>
       </div>
       <table>
         <thead>
@@ -310,7 +315,10 @@
     <div class="panel rise">
       <div class="head">
         <h2>Stigande larmtrend</h2>
-        <span class="sub">Mätare där larmfrekvensen ökar tydligt över perioden — kan missas i topplistan om totalantalet ännu är lågt</span>
+        <div class="head-right">
+          <span class="sub">Mätare där larmfrekvensen ökar tydligt över perioden — kan missas i topplistan om totalantalet ännu är lågt</span>
+          <button class="ghost small" id="btnExportRising" type="button">Exportera CSV</button>
+        </div>
       </div>
       <table>
         <thead>
@@ -318,6 +326,7 @@
             <th class="id">Id</th>
             <th>Typ</th>
             <th>Trend</th>
+            <th>Period</th>
             <th class="num">Första halvan</th>
             <th class="num">Andra halvan</th>
             <th class="num">Totalt</th>
@@ -332,7 +341,10 @@
     <div class="panel">
       <div class="head">
         <h2>Larmtyper i perioden</h2>
-        <span class="sub" id="topicSub"></span>
+        <div class="head-right">
+          <span class="sub" id="topicSub"></span>
+          <button class="ghost small" id="btnExportTopics" type="button">Exportera CSV</button>
+        </div>
       </div>
       <div class="topics" id="topicList"></div>
     </div>
@@ -349,7 +361,10 @@
         <h3 id="mTitle"></h3>
         <div class="meta" id="mMeta"></div>
       </div>
-      <button class="mclose" id="mClose" type="button">&times;</button>
+      <div style="display:flex; gap:8px; align-items:flex-start">
+        <button class="ghost small" id="btnExportModal" type="button">Exportera CSV</button>
+        <button class="mclose" id="mClose" type="button">&times;</button>
+      </div>
     </div>
     <div class="mbody" id="mBody"></div>
   </div>
@@ -876,9 +891,13 @@
     return date.getFullYear() + "-" + date.getMonth() + "-" + date.getDate();
   }
 
+  function stepMsFor(granularity) {
+    return granularity === "hour" ? 3600000 : granularity === "week" ? 7 * 86400000 : 86400000;
+  }
+
   function buildBucketList(start, end, granularity) {
-    var buckets = [];
-    var step = granularity === "hour" ? 3600000 : granularity === "week" ? 7 * 86400000 : 86400000;
+    var keys = [], dates = [];
+    var step = stepMsFor(granularity);
     var cursor = new Date(start);
     if (granularity === "day") cursor.setHours(0, 0, 0, 0);
     if (granularity === "week") {
@@ -888,32 +907,130 @@
     }
     if (granularity === "hour") cursor.setMinutes(0, 0, 0);
     while (cursor <= end) {
-      buckets.push(bucketKey(cursor, granularity));
+      keys.push(bucketKey(cursor, granularity));
+      dates.push(new Date(cursor));
       cursor = new Date(cursor.getTime() + step);
     }
-    if (!buckets.length) buckets.push(bucketKey(start, granularity));
-    return buckets;
+    if (!keys.length) { keys.push(bucketKey(start, granularity)); dates.push(new Date(start)); }
+    return { keys: keys, dates: dates };
   }
 
-  function linreg(xs, ys) {
-    var n = xs.length;
-    var sumX = 0, sumY = 0, sumXY = 0, sumXX = 0, sumYY = 0;
-    for (var i = 0; i < n; i++) {
-      sumX += xs[i]; sumY += ys[i]; sumXY += xs[i] * ys[i]; sumXX += xs[i] * xs[i]; sumYY += ys[i] * ys[i];
+  // ============================================================
+  // Sliding-window trend detection.
+  //
+  // A single regression over the whole selected period misses a meter
+  // that only ramped up during *part* of the period -- e.g. it rose in
+  // the middle and was calm before/after, or rose early and then
+  // plateaued. The calm buckets dilute the slope/correlation of a
+  // whole-period fit below the threshold even though there was a
+  // clear, real ramp-up somewhere inside it.
+  //
+  // So instead every contiguous window of at least RISE_MIN_WINDOW
+  // buckets is checked, and the strongest qualifying window wins.
+  // Prefix sums make each window's regression an O(1) lookup, so
+  // trying every (length, position) pair stays O(bucketCount^2) per
+  // meter instead of O(bucketCount^3).
+  // ============================================================
+
+  var RISE_MIN_WINDOW = 3;
+  // Testing every (length, position) window per meter is a multiple-comparisons
+  // problem: even a strict per-window significance threshold produces huge
+  // numbers of false positives once you're running hundreds of tests per
+  // meter across tens of thousands of meters (empirically ~50-95% of
+  // completely flat/random meters got flagged before this correction was
+  // added). RISE_PER_METER_ALPHA is a Bonferroni-style budget -- the actual
+  // per-window z-threshold is derived per meter from how many windows that
+  // meter's bucket count actually produces, so meters with more candidate
+  // windows automatically need stronger evidence.
+  var RISE_PER_METER_ALPHA = 0.01;
+  var RISE_MIN_ABS_COUNT = 2;
+  // Auto-chosen granularity keeps bucket counts small (hour <= 48, day <= 21,
+  // week generally under a few hundred even for multi-year spans). Only a
+  // manual "Timme" override over a long period can blow this up -- in that
+  // rare case, fall back to a single full-span window rather than searching
+  // every length exhaustively.
+  var RISE_MAX_BUCKETS_FOR_FULL_SEARCH = 500;
+
+  // Acklam's rational approximation of the inverse standard normal CDF, used
+  // to convert a per-meter Bonferroni-corrected alpha into a z-threshold.
+  function normInvCDF(p) {
+    if (p <= 0) return -Infinity;
+    if (p >= 1) return Infinity;
+    var a = [-3.969683028665376e+01, 2.209460984245205e+02, -2.759285104469687e+02, 1.383577518672690e+02, -3.066479806614716e+01, 2.506628277459239e+00];
+    var b = [-5.447609879822406e+01, 1.615858368580409e+02, -1.556989798598866e+02, 6.680131188771972e+01, -1.328068155288572e+01];
+    var c = [-7.784894002430293e-03, -3.223964580411365e-01, -2.400758277161838e+00, -2.549732539343734e+00, 4.374664141464968e+00, 2.938163982698783e+00];
+    var d = [7.784695709041462e-03, 3.224671290700398e-01, 2.445134137142996e+00, 3.754408661907416e+00];
+    var plow = 0.02425, phigh = 1 - plow, q, r;
+    if (p < plow) {
+      q = Math.sqrt(-2 * Math.log(p));
+      return (((((c[0] * q + c[1]) * q + c[2]) * q + c[3]) * q + c[4]) * q + c[5]) / ((((d[0] * q + d[1]) * q + d[2]) * q + d[3]) * q + 1);
     }
-    var denom = (n * sumXX - sumX * sumX);
-    var slope = denom !== 0 ? (n * sumXY - sumX * sumY) / denom : 0;
-    var covXY = sumXY / n - (sumX / n) * (sumY / n);
-    var varX = sumXX / n - (sumX / n) * (sumX / n);
-    var varY = sumYY / n - (sumY / n) * (sumY / n);
-    var r = (varX > 0 && varY > 0) ? covXY / Math.sqrt(varX * varY) : 0;
-    return { slope: slope, r: r };
+    if (p > phigh) {
+      q = Math.sqrt(-2 * Math.log(1 - p));
+      return -(((((c[0] * q + c[1]) * q + c[2]) * q + c[3]) * q + c[4]) * q + c[5]) / ((((d[0] * q + d[1]) * q + d[2]) * q + d[3]) * q + 1);
+    }
+    q = p - 0.5; r = q * q;
+    return (((((a[0] * r + a[1]) * r + a[2]) * r + a[3]) * r + a[4]) * r + a[5]) * q / (((((b[0] * r + b[1]) * r + b[2]) * r + b[3]) * r + b[4]) * r + 1);
+  }
+
+  function windowCountFor(n, minWindow) {
+    var k = 0;
+    for (var L = minWindow; L <= n; L++) k += (n - L + 1);
+    return k;
+  }
+
+  function buildPrefixSum(counts) {
+    var n = counts.length;
+    var S = new Array(n + 1);
+    S[0] = 0;
+    for (var t = 0; t < n; t++) S[t + 1] = S[t] + counts[t];
+    return S;
+  }
+
+  // For a candidate window, split it in half and ask: under a constant rate
+  // *within this window*, the second half would be expected to hold
+  // secondLen/L of the window's own total (a binomial proportion). Comparing
+  // the observed second-half count against that expectation is self-contained
+  // (no external baseline needed, so it works identically whether the window
+  // is a small slice or the entire selected period) and the variance scales
+  // correctly with the sample size, unlike naively comparing two raw sums
+  // (which is structurally biased whenever a window's length is odd, since
+  // the second half then always spans one more bucket than the first).
+  function findBestRisingWindow(counts) {
+    var n = counts.length;
+    if (n < RISE_MIN_WINDOW) return null;
+    var k = windowCountFor(n, RISE_MIN_WINDOW);
+    var zThreshold = normInvCDF(1 - RISE_PER_METER_ALPHA / k);
+    var S = buildPrefixSum(counts);
+    var minL = n > RISE_MAX_BUCKETS_FOR_FULL_SEARCH ? n : RISE_MIN_WINDOW;
+    var best = null;
+    for (var L = minL; L <= n; L++) {
+      var halfIdx = Math.floor(L / 2);
+      var p = (L - halfIdx) / L;
+      for (var i = 0; i + L <= n; i++) {
+        var firstHalf = S[i + halfIdx] - S[i];
+        var secondHalf = S[i + L] - S[i + halfIdx];
+        var total = firstHalf + secondHalf;
+        if (secondHalf < RISE_MIN_ABS_COUNT || total < RISE_MIN_ABS_COUNT) continue;
+        var expected = total * p;
+        var variance = total * p * (1 - p);
+        if (variance <= 0) continue;
+        var z = (secondHalf - expected) / Math.sqrt(variance);
+        if (z <= zThreshold) continue;
+        if (!best || z > best.z) {
+          best = { startIdx: i, endIdx: i + L, z: z, firstHalf: firstHalf, secondHalf: secondHalf, total: total };
+        }
+      }
+    }
+    return best;
   }
 
   function computeTrends(rows, start, end) {
     var span = end - start || 1;
     var granularity = chooseGranularity(span);
-    var bucketList = buildBucketList(start, end, granularity);
+    var buckets = buildBucketList(start, end, granularity);
+    var bucketList = buckets.keys;
+    var bucketDates = buckets.dates;
     var bucketIndex = {};
     bucketList.forEach(function (b, i) { bucketIndex[b] = i; });
 
@@ -926,22 +1043,24 @@
     });
 
     var minCount = parseInt($("fMinCount").value, 10);
-    var xs = bucketList.map(function (_, i) { return i; });
+    var stepMs = stepMsFor(granularity);
     var results = [];
     Object.keys(byMeter).forEach(function (id) {
       var counts = byMeter[id];
       var total = counts.reduce(function (a, b) { return a + b; }, 0);
-      if (total < minCount || counts.length < 3) return;
-      var reg = linreg(xs, counts);
-      var halfIdx = Math.floor(counts.length / 2);
-      var firstHalf = counts.slice(0, halfIdx).reduce(function (a, b) { return a + b; }, 0);
-      var secondHalf = counts.slice(halfIdx).reduce(function (a, b) { return a + b; }, 0);
-      var isRising = reg.slope > 0.08 && reg.r > 0.35 && secondHalf > firstHalf && secondHalf >= 2;
-      if (isRising) {
-        results.push({ id: id, counts: counts, total: total, slope: reg.slope, r: reg.r, firstHalf: firstHalf, secondHalf: secondHalf });
-      }
+      if (total < minCount || counts.length < RISE_MIN_WINDOW) return;
+      var win = findBestRisingWindow(counts);
+      if (!win) return;
+      results.push({
+        id: id,
+        counts: counts,
+        total: total,
+        window: win,
+        windowStart: bucketDates[win.startIdx],
+        windowEnd: new Date(bucketDates[win.endIdx - 1].getTime() + stepMs)
+      });
     });
-    results.sort(function (a, b) { return b.slope - a.slope || b.total - a.total; });
+    results.sort(function (a, b) { return b.window.z - a.window.z || b.total - a.total; });
     return { results: results, granularity: granularity };
   }
 
@@ -1022,9 +1141,10 @@
       tr.innerHTML =
         '<td class="id">' + esc(g.id) + '</td>' +
         '<td>' + esc(g.type) + '</td>' +
-        '<td>' + sparkline(res.counts) + '</td>' +
-        '<td class="num">' + res.firstHalf + '</td>' +
-        '<td class="num">' + res.secondHalf + '</td>' +
+        '<td>' + sparkline(res.counts, res.window) + '</td>' +
+        '<td style="font-family:var(--mono);font-size:.76rem;color:var(--text-dim);white-space:nowrap">' + esc(formatWindowRange(res.windowStart, res.windowEnd)) + '</td>' +
+        '<td class="num">' + res.window.firstHalf + '</td>' +
+        '<td class="num">' + res.window.secondHalf + '</td>' +
         '<td class="num">' + res.total + '</td>' +
         '<td>' + (inTop ? '<span class="tag">redan i topplistan</span>' : '<span class="tag new">ej i topplistan — nytt mönster</span>') + '</td>';
       body.appendChild(tr);
@@ -1032,11 +1152,22 @@
 
     var subEl = document.querySelector(".panel.rise .head .sub");
     if (results.length) {
-      subEl.textContent = "Beräknat per " + GRAN_LABEL[trendData.granularity] + " i vald period. Mätare där larmen ökar tydligt — kan missas i topplistan om totalantalet ännu är lågt.";
+      subEl.textContent = "Beräknat per " + GRAN_LABEL[trendData.granularity] + " — hittar det statistiskt starkaste tidsfönstret var som helst i perioden, inte bara i helperioden. Kan missas i topplistan om totalantalet ännu är lågt.";
     }
   }
 
-  function sparkline(counts) {
+  function formatWindowRange(start, end) {
+    var sameDay = start.toDateString() === end.toDateString();
+    var dateOpts = { day: "numeric", month: "short" };
+    var timeOpts = { hour: "2-digit", minute: "2-digit" };
+    if (sameDay) {
+      return start.toLocaleDateString("sv-SE", dateOpts) + " " +
+        start.toLocaleTimeString("sv-SE", timeOpts) + "–" + end.toLocaleTimeString("sv-SE", timeOpts);
+    }
+    return start.toLocaleDateString("sv-SE", dateOpts) + "–" + end.toLocaleDateString("sv-SE", dateOpts);
+  }
+
+  function sparkline(counts, highlight) {
     var w = 120, h = 30, pad = 3;
     var max = Math.max.apply(null, counts.concat([1]));
     var stepX = (w - pad * 2) / Math.max(1, counts.length - 1);
@@ -1045,7 +1176,14 @@
       var y = h - pad - (c / max) * (h - pad * 2);
       return x.toFixed(1) + "," + y.toFixed(1);
     }).join(" ");
+    var rect = "";
+    if (highlight) {
+      var x0 = Math.max(0, pad + highlight.startIdx * stepX - stepX / 2);
+      var x1 = Math.min(w, pad + (highlight.endIdx - 1) * stepX + stepX / 2);
+      rect = '<rect x="' + x0.toFixed(1) + '" y="0" width="' + Math.max(0, x1 - x0).toFixed(1) + '" height="' + h + '" fill="#f0a839" opacity="0.18"/>';
+    }
     return '<svg width="' + w + '" height="' + h + '" viewBox="0 0 ' + w + ' ' + h + '" style="display:block">' +
+      rect +
       '<polyline points="' + pts + '" fill="none" stroke="#e5484d" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round"/>' +
       '</svg>';
   }
@@ -1084,11 +1222,13 @@
 
   // ---------- modal ----------
   var modalBack = $("modalBack");
+  var currentModalGroup = null;
   $("mClose").addEventListener("click", closeModal);
   modalBack.addEventListener("click", function (e) { if (e.target === modalBack) closeModal(); });
   document.addEventListener("keydown", function (e) { if (e.key === "Escape") closeModal(); });
 
   function openModal(g) {
+    currentModalGroup = g;
     $("mTitle").textContent = g.id;
     $("mMeta").textContent = g.type + " · " + g.org + " · " + g.count + " larm mellan " + g.first.toLocaleString("sv-SE") + " och " + g.last.toLocaleString("sv-SE");
     var body = $("mBody");
@@ -1105,7 +1245,95 @@
     });
     modalBack.style.display = "flex";
   }
-  function closeModal() { modalBack.style.display = "none"; }
+  function closeModal() { modalBack.style.display = "none"; currentModalGroup = null; }
+
+  // ============================================================
+  // CSV export — each panel exports its full underlying data set
+  // (respecting the current date/topic/search filters), not just the
+  // rows currently rendered on screen (the UI caps some tables at 15).
+  // ============================================================
+
+  function csvCell(v) {
+    var s = v === null || v === undefined ? "" : String(v);
+    return /[",\r\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+  }
+
+  function downloadCSV(headers, rows, filename) {
+    var lines = [headers.map(csvCell).join(",")];
+    rows.forEach(function (r) { lines.push(r.map(csvCell).join(",")); });
+    var csv = String.fromCharCode(0xFEFF) + lines.join("\r\n") + "\r\n";
+    var blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
+  }
+
+  function exportTopCSV() {
+    var filtered = getFiltered();
+    var groups = groupByMeter(filtered);
+    groups.sort(function (a, b) { return b.count - a.count; });
+    var total = filtered.length;
+    var rows = groups.map(function (g, i) {
+      var pct = total ? Math.round((g.count / total) * 100) : 0;
+      return [i + 1, g.id, g.type, topTopic(g) || "", g.org || "", g.count, pct + "%", g.last.toLocaleString("sv-SE")];
+    });
+    downloadCSV(["#", "Id", "Typ", "Vanligaste larm", "Organisation", "Antal", "Andel", "Senaste larm"], rows, "mest-larmande-matare.csv");
+  }
+
+  function exportRisingCSV() {
+    var filtered = getFiltered();
+    var groups = groupByMeter(filtered);
+    groups.sort(function (a, b) { return b.count - a.count; });
+    var byId = {};
+    groups.forEach(function (g) { byId[g.id] = g; });
+    var topIds = {};
+    groups.slice(0, 10).forEach(function (g) { topIds[g.id] = true; });
+    var start = $("fStart").value ? new Date($("fStart").value) : state.minDate;
+    var end = $("fEnd").value ? new Date($("fEnd").value) : state.maxDate;
+    var trendData = computeTrends(filtered, start, end);
+    var rows = trendData.results.map(function (res) {
+      var g = byId[res.id];
+      return [
+        res.id,
+        g ? g.type : "",
+        formatWindowRange(res.windowStart, res.windowEnd),
+        res.window.firstHalf,
+        res.window.secondHalf,
+        res.total,
+        topIds[res.id] ? "Ja" : "Nej"
+      ];
+    });
+    downloadCSV(["Id", "Typ", "Period", "Första halvan", "Andra halvan", "Totalt", "I topplistan"], rows, "stigande-larmtrend.csv");
+  }
+
+  function exportTopicsCSV() {
+    var filtered = getFiltered({ ignoreTopic: true });
+    var counts = {};
+    filtered.forEach(function (r) { counts[r.topic] = (counts[r.topic] || 0) + 1; });
+    var list = Object.keys(counts).map(function (t) { return { topic: t, n: counts[t] }; });
+    list.sort(function (a, b) { return b.n - a.n; });
+    var rows = list.map(function (item) { return [item.topic, item.n]; });
+    downloadCSV(["Larmtyp", "Antal"], rows, "larmtyper.csv");
+  }
+
+  function exportModalCSV() {
+    if (!currentModalGroup) return;
+    var events = currentModalGroup.events.slice().sort(function (a, b) { return b.timestamp - a.timestamp; });
+    var rows = events.map(function (e) {
+      return [e.topic, e.timestamp.toLocaleString("sv-SE"), e.severity, e.message || "", e.correlationId || ""];
+    });
+    downloadCSV(["Topic", "Timestamp", "Severity", "Meddelande", "Correlation ID"], rows, "larm-" + currentModalGroup.id + ".csv");
+  }
+
+  $("btnExportTop").addEventListener("click", exportTopCSV);
+  $("btnExportRising").addEventListener("click", exportRisingCSV);
+  $("btnExportTopics").addEventListener("click", exportTopicsCSV);
+  $("btnExportModal").addEventListener("click", exportModalCSV);
 
   // ---------- control listeners ----------
   ["fStart", "fEnd", "fGranularity", "fMinCount", "fTopic"].forEach(function (id) {

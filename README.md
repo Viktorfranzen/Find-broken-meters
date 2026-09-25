@@ -17,14 +17,24 @@ Ingen backend, inget byggsteg — allt körs i webbläsaren.
 - Läser filen i bitar (streaming) istället för allt på en gång, så även
   exporter på flera hundra MB går att öppna utan att fliken kör slut på minne.
 - **Topplista** — de mätare/enheter som larmat mest under vald period.
-- **Stigande trend** — mätare vars larmfrekvens ökar tydligt över perioden
-  (linjär regression per tidsbucket: timme/dag/vecka, auto-vald efter periodens
-  längd). Dessa markeras separat eftersom de kan missas i topplistan om
-  totalantalet ännu är lågt.
+- **Stigande trend** — mätare vars larmfrekvens ökar tydligt *någon gång* under
+  perioden, inte bara om hela perioden i ett svep visar en uppåtgående trend.
+  Algoritmen söker igenom alla rimliga tidsfönster (timme/dag/vecka, auto-vald
+  efter periodens längd) och flaggar det statistiskt starkaste — en burst mitt
+  i perioden som klingar av missas alltså inte bara för att helperioden ser
+  lugn ut. Fönstrets exakta tidsspann visas i en egen kolumn. Signifikansen
+  räknas ut med ett binomialtest som Bonferroni-korrigeras per mätare (utifrån
+  hur många kandidatfönster just den mätarens datamängd ger upphov till), vilket
+  håller falsklarmsfrekvensen mycket låg även med tiotusentals mätare i filen.
+  Dessa markeras separat eftersom de kan missas i topplistan om totalantalet
+  ännu är lågt.
 - **Filtrera på larmtyp** — via dropdownen "Larmtyp" eller genom att klicka på
   en rad i "Larmtyper i perioden", t.ex. för att bara se ett specifikt larm
   som `Device.PowerGridMonitoring.E11`. Klicka igen för att rensa filtret.
 - Klickbara rader visar samtliga enskilda larmhändelser för en mätare.
+- **Exportera CSV** — varje vy (Topplista, Stigande larmtrend, Larmtyper samt
+  detaljvyn för en enskild mätare) har en egen exportknapp. Exporten tar med
+  all data som matchar aktuella filter, inte bara de rader som visas på skärmen.
 
 ## Använda appen
 
@@ -52,8 +62,10 @@ intranät …) — filen är helt fristående.
 Öppna `index.html` och leta upp:
 
 - `resolveMeterIdentity()` — logiken för vilket id ett larm grupperas på.
-- `computeTrends()` — tröskelvärden för vad som räknas som "stigande trend"
-  (lutning, korrelation, min. antal larm).
+- `findBestRisingWindow()` och konstanterna `RISE_MIN_WINDOW`,
+  `RISE_PER_METER_ALPHA`, `RISE_MIN_ABS_COUNT` — tröskelvärden för vad som
+  räknas som "stigande trend" (minsta fönsterstorlek, hur strikt den
+  Bonferroni-korrigerade signifikansnivån är, minsta antal larm i ett fönster).
 - `detectDelimiter()` — vilka tecken som provas som kolumnavgränsare.
 - CSS-variablerna högst upp i `<style>` — färgtema.
 
